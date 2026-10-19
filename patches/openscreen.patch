@@ -1,0 +1,474 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index 5659a647..eacde24d 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -77,6 +77,7 @@ group("gn_all") {
+     if (!build_with_chromium) {
+       deps += [
+         "cast/standalone_sender:cast_sender",
++        "//nestcast:nestcast",
+         "osp:osp_demo",
+         "third_party/protobuf:protoc($host_toolchain)",
+         "third_party/zlib",
+diff --git a/cast/standalone_sender/BUILD.gn b/cast/standalone_sender/BUILD.gn
+index 70cf7bd2..bfd491da 100644
+--- a/cast/standalone_sender/BUILD.gn
++++ b/cast/standalone_sender/BUILD.gn
+@@ -36,7 +36,7 @@ if (!build_with_chromium) {
+ 
+   openscreen_source_set("cast_sender_core") {
+     testonly = true
+-    visibility += [ "../*" ]
++    visibility += [ "../*", "//nestcast/*" ]
+     public_deps = [
+       "../../discovery:dnssd",
+       "../../discovery:public",
+diff --git a/cast/standalone_sender/connection_settings.h b/cast/standalone_sender/connection_settings.h
+index 2c430968..1626742a 100644
+--- a/cast/standalone_sender/connection_settings.h
++++ b/cast/standalone_sender/connection_settings.h
+@@ -51,6 +51,10 @@ struct ConnectionSettings {
+   // Whether DSCP support should be enabled for Quality of Service.
+   bool enable_dscp = true;
+ 
++  // nestcast: if true, LAUNCH only when the receiver is idle (no app, or an
++  // idle-screen app), and never take over a receiver another app is using.
++  bool yield_to_other_apps = false;
++
+   // Whether input event API should be enabled for this session.
+   bool enable_input_events = false;
+ 
+diff --git a/cast/standalone_sender/file_sender.cc b/cast/standalone_sender/file_sender.cc
+index babdf87d..62f24d9f 100644
+--- a/cast/standalone_sender/file_sender.cc
++++ b/cast/standalone_sender/file_sender.cc
+@@ -16,6 +16,18 @@
+ 
+ namespace openscreen::cast {
+ 
++namespace {
++FileSender::Factory& FactoryOverride() {
++  static FileSender::Factory* factory = new FileSender::Factory();
++  return *factory;
++}
++}  // namespace
++
++// static
++void FileSender::SetFactoryOverride(Factory factory) {
++  FactoryOverride() = std::move(factory);
++}
++
+ // static
+ std::unique_ptr<FileSender> FileSender::Create(
+     Environment& environment,
+@@ -23,6 +35,10 @@ std::unique_ptr<FileSender> FileSender::Create(
+     const SenderSession* session,
+     SenderSession::ConfiguredSenders senders,
+     ShutdownCallback shutdown_callback) {
++  if (FactoryOverride()) {
++    return FactoryOverride()(environment, std::move(settings), session,
++                             std::move(senders), std::move(shutdown_callback));
++  }
+ #if defined(CAST_STANDALONE_SENDER_HAVE_EXTERNAL_LIBS)
+   return std::make_unique<LoopingFileSender>(environment, std::move(settings),
+                                              session, std::move(senders),
+diff --git a/cast/standalone_sender/file_sender.h b/cast/standalone_sender/file_sender.h
+index 7ec294cb..624948b0 100644
+--- a/cast/standalone_sender/file_sender.h
++++ b/cast/standalone_sender/file_sender.h
+@@ -29,6 +29,13 @@ class FileSender {
+       SenderSession::ConfiguredSenders senders,
+       ShutdownCallback shutdown_callback);
+ 
++  // nestcast: lets an embedder replace the file-based sender (e.g. with a
++  // live-capture sender). When set, Create() delegates to it.
++  using Factory = std::function<std::unique_ptr<FileSender>(
++      Environment&, ConnectionSettings, const SenderSession*,
++      SenderSession::ConfiguredSenders, ShutdownCallback)>;
++  static void SetFactoryOverride(Factory factory);
++
+   virtual ~FileSender() = default;
+ 
+   virtual void SetPlaybackRate(double rate) = 0;
+diff --git a/cast/standalone_sender/looping_file_cast_agent.cc b/cast/standalone_sender/looping_file_cast_agent.cc
+index 25704634..8e33eb5b 100644
+--- a/cast/standalone_sender/looping_file_cast_agent.cc
++++ b/cast/standalone_sender/looping_file_cast_agent.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include <cstdlib>
+ #include "cast/standalone_sender/looping_file_cast_agent.h"
+ 
+ #include <algorithm>
+@@ -199,12 +200,56 @@ void LoopingFileCastAgent::OnMessage(VirtualConnectionRouter* router,
+ }
+ 
+ const char* LoopingFileCastAgent::GetStreamingAppId() const {
+-  return connection_settings_ && !connection_settings_->should_include_video
++  return connection_settings_ && !connection_settings_->should_include_video &&
++                 !getenv("CAST_FORCE_AV_APP")
+              ? GetCastStreamingAudioOnlyAppId()
+              : GetCastStreamingAudioVideoAppId();
+ }
+ 
++void LoopingFileCastAgent::SetReceiverVolume(std::optional<double> level,
++                                             std::optional<bool> muted) {
++  if (!platform_remote_connection_ || (!level && !muted)) {
++    return;
++  }
++  std::string volume;
++  if (level) {
++    volume = std::format(R"("level":{:.3f})", std::clamp(*level, 0.0, 1.0));
++  }
++  if (muted) {
++    volume += std::format(R"({}"muted":{})", volume.empty() ? "" : ",",
++                          *muted ? "true" : "false");
++  }
++  router_.Send(*platform_remote_connection_,
++               MakeSimpleUTF8Message(
++                   kReceiverNamespace,
++                   std::format(R"({{"type":"SET_VOLUME", "requestId":{}, )"
++                               R"("volume":{{{}}}}})",
++                               next_request_id_++, volume)));
++}
++
+ void LoopingFileCastAgent::HandleReceiverStatus(const Json::Value& status) {
++  {
++    const Json::Value& vol = status[kMessageKeyStatus]["volume"];
++    if (on_receiver_volume && vol.isObject() && vol["level"].isNumeric()) {
++      on_receiver_volume(vol["level"].asDouble(),
++                         vol["muted"].isBool() && vol["muted"].asBool());
++    }
++  }
++  const bool yield =
++      connection_settings_ && connection_settings_->yield_to_other_apps;
++  if (awaiting_idle_check_) {
++    awaiting_idle_check_ = false;
++    const std::string other = FindOtherActiveApp(status);
++    if (!other.empty()) {
++      busy_app_ = other;
++      OSP_LOG_INFO << "Cast Receiver is busy with " << other
++                   << "; not launching.";
++      Shutdown();
++      return;
++    }
++    SendLaunch();
++    return;
++  }
+   const Json::Value& details =
+       (status[kMessageKeyStatus].isObject() &&
+        status[kMessageKeyStatus][kMessageKeyApplications].isArray())
+@@ -214,6 +259,20 @@ void LoopingFileCastAgent::HandleReceiverStatus(const Json::Value& status) {
+   std::string running_app_id;
+   if (!json::TryParseString(details[kMessageKeyAppId], &running_app_id) ||
+       running_app_id != GetStreamingAppId()) {
++    if (has_launched_ && yield) {
++      const std::string other = FindOtherActiveApp(status);
++      if (!other.empty()) {
++        busy_app_ = other;
++        OSP_LOG_INFO << "Another app took over the Cast Receiver: " << other;
++        if (on_yielding) {
++          on_yielding();
++          // Give messages sent by the hook time to reach the receiver.
++          stop_ack_timeout_.ScheduleFromNow([this] { Shutdown(); },
++                                            std::chrono::milliseconds(300));
++          return;
++        }
++      }
++    }
+     if (has_launched_) {
+       // The mirroring app is not running and should have already been launched.
+       // The receiver has already told us it's gone (whether because we asked it
+@@ -306,6 +365,20 @@ void LoopingFileCastAgent::OnReceiverMessagingOpened(bool success) {
+     return;
+   }
+ 
++  if (connection_settings_ && connection_settings_->yield_to_other_apps) {
++    // Ask what's running first; HandleReceiverStatus() decides to LAUNCH.
++    awaiting_idle_check_ = true;
++    router_.Send(*platform_remote_connection_,
++                 MakeSimpleUTF8Message(
++                     kReceiverNamespace,
++                     std::format(R"({{"type":"GET_STATUS", "requestId":{}}})",
++                                 next_request_id_++)));
++    return;
++  }
++  SendLaunch();
++}
++
++void LoopingFileCastAgent::SendLaunch() {
+   static constexpr char kLaunchMessageTemplate[] =
+       R"({{"type":"LAUNCH", "requestId":{}, "appId":"{}", "language": "en-US",
+        "supportedAppTypes":["WEB"]}})";
+@@ -316,6 +389,30 @@ void LoopingFileCastAgent::OnReceiverMessagingOpened(bool success) {
+                                GetStreamingAppId())));
+ }
+ 
++std::string LoopingFileCastAgent::FindOtherActiveApp(
++    const Json::Value& status) const {
++  const Json::Value& apps = status[kMessageKeyStatus][kMessageKeyApplications];
++  if (!status[kMessageKeyStatus].isObject() || !apps.isArray()) {
++    return {};
++  }
++  for (const Json::Value& app : apps) {
++    std::string app_id;
++    json::TryParseString(app[kMessageKeyAppId], &app_id);
++    if (app_id.empty() || app_id == GetStreamingAppId()) {
++      continue;
++    }
++    if (app["isIdleScreen"].isBool() && app["isIdleScreen"].asBool()) {
++      continue;  // Backdrop / ambient screen: the receiver is idle.
++    }
++    std::string name;
++    if (!json::TryParseString(app["displayName"], &name) || name.empty()) {
++      name = app_id;
++    }
++    return name + " (" + app_id + ")";
++  }
++  return {};
++}
++
+ void LoopingFileCastAgent::CreateAndStartSession() {
+   TRACE_DEFAULT_SCOPED(TraceCategory::kStandaloneSender);
+ 
+@@ -343,6 +440,10 @@ void LoopingFileCastAgent::CreateAndStartSession() {
+   AudioCaptureConfig audio_config;
+   // Opus does best at 192kbps, so we cap that here.
+   audio_config.bit_rate = 192 * 1000;
++  if (const char* ms = getenv("CAST_PLAYOUT_MS")) {
++    audio_config.target_playout_delay = std::chrono::milliseconds(atoi(ms));
++    OSP_LOG_INFO << "Audio target playout delay: " << atoi(ms) << "ms";
++  }
+   VideoCaptureConfig video_config = {
+       .codec = connection_settings_->codec,
+       // The video config is allowed to use whatever is left over after audio.
+@@ -352,6 +453,9 @@ void LoopingFileCastAgent::CreateAndStartSession() {
+                                                       : 0)};
+   // Use default display resolution of 1080P.
+   video_config.resolutions.emplace_back(Resolution{1920, 1080});
++  // nestcast: the receiver may A/V-sync audio to video, so video must use the
++  // same (low) playout delay as audio.
++  video_config.target_playout_delay = audio_config.target_playout_delay;
+ 
+   OSP_VLOG << "Starting session negotiation.";
+   Error negotiation_error;
+@@ -366,8 +470,12 @@ void LoopingFileCastAgent::CreateAndStartSession() {
+   } else {
+     cast_mode_ = CastMode::kMirroring;
+     if (connection_settings_->should_include_audio) {
+-      negotiation_error =
+-          current_session_->Negotiate({audio_config}, {video_config});
++      if (connection_settings_->should_include_video) {
++        negotiation_error =
++            current_session_->Negotiate({audio_config}, {video_config});
++      } else {
++        negotiation_error = current_session_->Negotiate({audio_config}, {});
++      }
+     } else {
+       negotiation_error = current_session_->Negotiate({}, {video_config});
+     }
+diff --git a/cast/standalone_sender/looping_file_cast_agent.h b/cast/standalone_sender/looping_file_cast_agent.h
+index f9a4e6d4..c0fa408e 100644
+--- a/cast/standalone_sender/looping_file_cast_agent.h
++++ b/cast/standalone_sender/looping_file_cast_agent.h
+@@ -109,6 +109,20 @@ class LoopingFileCastAgent final
+   // multiple times.
+   void RequestStop();
+ 
++  // nestcast: non-empty if this agent stopped (or never launched) because
++  // another app is using the receiver; holds that app's display name/id.
++  const std::string& busy_app() const { return busy_app_; }
++
++  // nestcast: receiver volume control.
++  // Called for every RECEIVER_STATUS that carries a volume.
++  std::function<void(double level, bool muted)> on_receiver_volume;
++  // Called just before this agent yields to another app (the connection is
++  // still open for ~300 ms, e.g. to restore the receiver's volume).
++  std::function<void()> on_yielding;
++  // Sends SET_VOLUME on the platform connection (no-op if not connected).
++  void SetReceiverVolume(std::optional<double> level,
++                         std::optional<bool> muted);
++
+  private:
+   // SenderSocketFactory::Client overrides.
+   void OnConnected(SenderSocketFactory* factory,
+@@ -139,6 +153,13 @@ class LoopingFileCastAgent final
+   // audio-only streaming, as configured by the ConnectionSettings.
+   const char* GetStreamingAppId() const;
+ 
++  // nestcast: returns the display name (or id) of a non-idle app other than
++  // ours that is running according to `status`, or "" if the receiver is idle.
++  std::string FindOtherActiveApp(const Json::Value& status) const;
++  void SendLaunch();
++  bool awaiting_idle_check_ = false;
++  std::string busy_app_;
++
+   // Called by OnMessage() to determine whether the Cast Receiver has launched
+   // or unlaunched the Mirroring App. If the former, a VirtualConnection is
+   // requested. Otherwise, the workflow is aborted and Shutdown() is called.
+diff --git a/cast/standalone_sender/looping_file_sender.cc b/cast/standalone_sender/looping_file_sender.cc
+index 385705b5..4b67354d 100644
+--- a/cast/standalone_sender/looping_file_sender.cc
++++ b/cast/standalone_sender/looping_file_sender.cc
+@@ -5,6 +5,9 @@
+ #include "cast/standalone_sender/looping_file_sender.h"
+ 
+ #include <array>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
+ #include <cmath>
+ #include <span>
+ #include <utility>
+@@ -209,6 +212,25 @@ void LoopingFileSender::SendFileAgain() {
+   OSP_CHECK_EQ(num_capturers_running_, 0);
+   num_capturers_running_ = settings_.should_include_audio ? 2 : 1;
+   capture_begin_time_ = latest_frame_time_ = env_.now() + seconds(1);
++  {
++    // Wall-clock (Unix epoch, microseconds) of media time 0, for latency
++    // measurement against a locally-played reference beep.
++    const auto sys_now = std::chrono::system_clock::now();
++    const auto t0 = sys_now + std::chrono::duration_cast<
++                                  std::chrono::system_clock::duration>(
++                                  capture_begin_time_ - env_.now());
++    const long long t0_us =
++        std::chrono::duration_cast<std::chrono::microseconds>(
++            t0.time_since_epoch())
++            .count();
++    OSP_LOG_INFO << "SYNC_T0_EPOCH_US=" << t0_us;
++    if (const char* path = getenv("CAST_SYNC_FILE")) {
++      if (FILE* f = fopen(path, "w")) {
++        fprintf(f, "%lld\n", t0_us);
++        fclose(f);
++      }
++    }
++  }
+   if (settings_.should_include_audio) {
+     audio_capturer_ = std::make_unique<SimulatedAudioCapturer>(
+         env_, settings_.path_to_file.c_str(), audio_encoder_->num_channels(),
+@@ -232,6 +254,14 @@ void LoopingFileSender::OnAudioData(const float* interleaved_samples,
+                 std::to_string(num_samples), "reference_time",
+                 ToString(reference_time));
+   latest_frame_time_ = std::max(reference_time, latest_frame_time_);
++  if (!logged_first_audio_) {
++    logged_first_audio_ = true;
++    OSP_LOG_INFO << "SYNC first audio frame reference_time - T0 = "
++                 << std::chrono::duration_cast<std::chrono::microseconds>(
++                        reference_time - capture_begin_time_)
++                        .count()
++                 << "us";
++  }
+   if (audio_encoder_) {
+     audio_encoder_->EncodeAndSend(interleaved_samples, num_samples,
+                                   capture_begin_time, capture_end_time,
+diff --git a/cast/standalone_sender/looping_file_sender.h b/cast/standalone_sender/looping_file_sender.h
+index 25ed8162..05e6caf3 100644
+--- a/cast/standalone_sender/looping_file_sender.h
++++ b/cast/standalone_sender/looping_file_sender.h
+@@ -115,6 +115,7 @@ class LoopingFileSender final : public FileSender,
+   std::unique_ptr<StreamingVideoEncoder> video_encoder_;
+ 
+   int num_capturers_running_ = 0;
++  bool logged_first_audio_ = false;
+   Clock::time_point capture_begin_time_{};
+   Clock::time_point latest_frame_time_{};
+ 
+diff --git a/cast/standalone_sender/main.cc b/cast/standalone_sender/main.cc
+index 18e48104..2adaead3 100644
+--- a/cast/standalone_sender/main.cc
++++ b/cast/standalone_sender/main.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ 
++#include <cstdlib>
+ #include <cinttypes>
+ #include <csignal>
+ #include <cstdio>
+@@ -296,7 +297,7 @@ int StandaloneSenderMain(int argc, char* argv[]) {
+     cast_agent->Connect({.receiver_endpoint = remote_endpoint,
+                          .path_to_file = args->file_path,
+                          .max_bitrate = args->max_bitrate,
+-                         .should_include_video = true,
++                         .should_include_video = !getenv("CAST_AUDIO_ONLY"),
+                          .use_android_rtp_hack = args->use_android_rtp_hack,
+                          .use_remoting = args->use_remoting,
+                          .should_loop_video = args->should_loop_video,
+diff --git a/cast/streaming/impl/sender_impl.cc b/cast/streaming/impl/sender_impl.cc
+index 68348637..bbdfda30 100644
+--- a/cast/streaming/impl/sender_impl.cc
++++ b/cast/streaming/impl/sender_impl.cc
+@@ -5,6 +5,7 @@
+ #include "cast/streaming/impl/sender_impl.h"
+ 
+ #include <algorithm>
++#include <cstdlib>
+ #include <chrono>
+ #include <ratio>
+ #include <utility>
+@@ -203,6 +204,16 @@ openscreen::cast::Sender::EnqueueFrameResult SenderImpl::EnqueueFrame(
+     playout_delay_change_at_frame_id_ = slot.frame.frame_id;
+   }
+ 
++  if (getenv("NESTCAST_DEBUG_TIMING") && debug_frames_logged_ < 8) {
++    ++debug_frames_logged_;
++    OSP_LOG_INFO << "TIMING ssrc=" << config_.sender_ssrc << " frame="
++                 << slot.frame.frame_id << " rtp=" << slot.frame.rtp_timestamp
++                 << " ref_us="
++                 << to_microseconds(slot.frame.reference_time.time_since_epoch())
++                        .count()
++                 << " now_minus_ref_us="
++                 << to_microseconds(now_() - slot.frame.reference_time).count();
++  }
+   // Update the lip-sync information for the next Sender Report, ensuring that
+   // the reference time is monotonically increasing.
+   pending_sender_report_.reference_time =
+@@ -284,6 +295,16 @@ ByteBuffer SenderImpl::GetRtcpPacketForImmediateSend(
+       sender_report.reference_time - pending_sender_report_.reference_time,
+       rtp_timebase_);
+ 
++  if (getenv("NESTCAST_DEBUG_TIMING") && debug_srs_logged_ < 8) {
++    ++debug_srs_logged_;
++    OSP_LOG_INFO << "TIMING SR ssrc=" << config_.sender_ssrc << " send_us="
++                 << to_microseconds(send_time.time_since_epoch()).count()
++                 << " rtp=" << sender_report.rtp_timestamp << " pending_ref_us="
++                 << to_microseconds(
++                        pending_sender_report_.reference_time.time_since_epoch())
++                        .count()
++                 << " pending_rtp=" << pending_sender_report_.rtp_timestamp;
++  }
+   return sender_report_builder_.BuildPacket(sender_report, buffer).first;
+ }
+ 
+diff --git a/cast/streaming/impl/sender_impl.h b/cast/streaming/impl/sender_impl.h
+index 8eb0acd0..ab58b481 100644
+--- a/cast/streaming/impl/sender_impl.h
++++ b/cast/streaming/impl/sender_impl.h
+@@ -251,6 +251,8 @@ class SenderImpl final : public Sender,
+   // calling APIs like EnqueueFrame(), `this` must be in a good state before
+   // the observer is notified of any pending frame cancellations.
+   std::vector<FrameId> pending_cancellations_;
++  int debug_frames_logged_ = 0;
++  int debug_srs_logged_ = 0;
+ };
+ 
+ }  // namespace openscreen::cast
+diff --git a/cast/streaming/public/sender_session.cc b/cast/streaming/public/sender_session.cc
+index 349afdc7..9f2a1a43 100644
+--- a/cast/streaming/public/sender_session.cc
++++ b/cast/streaming/public/sender_session.cc
+@@ -647,6 +647,12 @@ std::unique_ptr<Sender> SenderSession::CreateSender(Ssrc receiver_ssrc,
+                        stream.aes_iv_mask,
+                        /* is_pli_enabled*/ true,
+                        ToStreamType(type, config_.use_android_rtp_hack)};
++  // nestcast: allow up to the full playout delay in flight (default would be
++  // clamp(2*RTT, 66ms, delay/3)). For audio, a sender-side drop is a certain
++  // gap, while a frame sent late still has a chance; so only drop frames that
++  // could no longer be played anyway.
++  config.max_in_flight_media_duration =
++      std::chrono::duration_cast<std::chrono::milliseconds>(stream.target_delay);
+   OSP_DCHECK(config.IsValid());
+   return std::make_unique<SenderImpl>(*config_.environment, packet_router_,
+                                       std::move(config), type);

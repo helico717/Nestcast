@@ -1,0 +1,9 @@
+dist/
+build/
+*.pkg
+*.raw
+*.wav
+*.m4a
+*.mov
+*.MOV
+.DS_Store

@@ -1,0 +1,52 @@
+#!/bin/zsh
+# Nestcast installer: post-install (runs as root).
+# - Fixes ownership of the audio driver and restarts Core Audio to load it.
+# - Installs and starts the per-user LaunchAgent for the logged-in user.
+LOG=/tmp/nestcast-install.log
+exec >>$LOG 2>&1
+echo "== postinstall $(date)"
+
+chown -R root:wheel "/Library/Audio/Plug-Ins/HAL/NestHubCast.driver"
+killall -9 coreaudiod 2>/dev/null || true   # Restarts automatically.
+
+USER_NAME=$(stat -f %Su /dev/console)
+if [[ -z "$USER_NAME" || "$USER_NAME" == "root" || "$USER_NAME" == "loginwindow" ]]; then
+  echo "no console user; the LaunchAgent will be installed on next run of the installer"
+  exit 0
+fi
+USER_ID=$(id -u "$USER_NAME")
+USER_HOME=$(dscl . -read "/Users/$USER_NAME" NFSHomeDirectory | awk '{print $2}')
+AGENT_DIR="$USER_HOME/Library/LaunchAgents"
+AGENT="$AGENT_DIR/local.nestcast.plist"
+
+mkdir -p "$AGENT_DIR" "$USER_HOME/Library/Logs"
+cat > "$AGENT" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.nestcast</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Applications/Nestcast.app/Contents/MacOS/Nestcast</string>
+    <string>--playout</string><string>300</string>
+    <string>--mute</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+  <key>StandardOutPath</key><string>$USER_HOME/Library/Logs/nestcast.log</string>
+  <key>StandardErrorPath</key><string>$USER_HOME/Library/Logs/nestcast.log</string>
+</dict>
+</plist>
+EOF
+chown "$USER_NAME":staff "$AGENT"
+chmod 644 "$AGENT"
+
+sleep 3   # Let coreaudiod come back with the new device.
+launchctl bootout "gui/$USER_ID/local.nestcast" 2>/dev/null || true
+launchctl bootstrap "gui/$USER_ID" "$AGENT"
+echo "LaunchAgent started for $USER_NAME"
+exit 0

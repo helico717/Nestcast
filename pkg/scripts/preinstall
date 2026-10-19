@@ -1,0 +1,10 @@
+#!/bin/zsh
+# Nestcast installer: pre-install (runs as root). Stops a running Nestcast so
+# its files can be replaced; the Hub gets its volume back on the way out.
+exec >>/tmp/nestcast-install.log 2>&1
+echo "== preinstall $(date)"
+USER_NAME=$(stat -f %Su /dev/console)
+if [[ -n "$USER_NAME" && "$USER_NAME" != "root" ]]; then
+  launchctl bootout "gui/$(id -u "$USER_NAME")/local.nestcast" 2>/dev/null || true
+fi
+exit 0

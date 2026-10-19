@@ -1,0 +1,72 @@
+diff --git a/config/apple/sdk_info.py b/config/apple/sdk_info.py
+index 646cc5ed4..0b2bf20b7 100755
+--- a/config/apple/sdk_info.py
++++ b/config/apple/sdk_info.py
+@@ -62,11 +62,16 @@ def FillXcodeVersion(settings, developer_dir):
+         settings['xcode_build'] = version_plist['ProductBuildVersion']
+         return
+ 
+-    lines = (
+-        subprocess.check_output(['xcodebuild', '-version'])
+-        .decode('UTF-8')
+-        .splitlines()
+-    )
++    try:
++        lines = (
++            subprocess.check_output(['xcodebuild', '-version'],
++                                    stderr=subprocess.DEVNULL)
++            .decode('UTF-8')
++            .splitlines()
++        )
++    except subprocess.CalledProcessError:
++        # Command Line Tools only (no Xcode.app): fake an Xcode version.
++        lines = ['Xcode 26.0', 'Build version 17A000']
+     version_verbatim = lines[0].split()[-1]
+     settings['xcode_version'] = FormatVersion(version_verbatim)
+     settings['xcode_version_int'] = int(settings['xcode_version'], 10)
+@@ -98,13 +103,17 @@ def FillSDKPathAndVersion(settings, platform, xcode_version):
+         .decode('UTF-8')
+         .strip()
+     )
+-    settings['sdk_platform_path'] = (
+-        subprocess.check_output(
+-            ['xcrun', '-sdk', platform, '--show-sdk-platform-path']
++    try:
++        settings['sdk_platform_path'] = (
++            subprocess.check_output(
++                ['xcrun', '-sdk', platform, '--show-sdk-platform-path'],
++                stderr=subprocess.DEVNULL,
++            )
++            .decode('UTF-8')
++            .strip()
+         )
+-        .decode('UTF-8')
+-        .strip()
+-    )
++    except subprocess.CalledProcessError:
++        settings['sdk_platform_path'] = settings['sdk_path']
+     settings['sdk_build'] = (
+         subprocess.check_output(
+             ['xcrun', '-sdk', platform, '--show-sdk-build-version']
+diff --git a/mac/find_sdk.py b/mac/find_sdk.py
+index 4cb718416..24b06a2c7 100755
+--- a/mac/find_sdk.py
++++ b/mac/find_sdk.py
+@@ -83,6 +83,8 @@ def main():
+         raise Exception('Error %d running xcode-select' % job.returncode)
+     dev_dir = out.decode('UTF-8').rstrip()
+     sdk_dir = os.path.join(dev_dir, 'Platforms/MacOSX.platform/Developer/SDKs')
++    if not os.path.isdir(sdk_dir) and os.path.isdir(os.path.join(dev_dir, 'SDKs')):
++        sdk_dir = os.path.join(dev_dir, 'SDKs')  # Command Line Tools layout
+ 
+     if not os.path.isdir(sdk_dir):
+         raise SdkError(
+@@ -111,6 +113,8 @@ def main():
+ 
+     if options.print_bin_path:
+         bin_path = 'Toolchains/XcodeDefault.xctoolchain/usr/bin/'
++        if not os.path.isdir(os.path.join(dev_dir, bin_path)):
++            bin_path = 'usr/bin/'
+         print(os.path.join(dev_dir, bin_path))
+ 
+     if options.print_sdk_build:

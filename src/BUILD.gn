@@ -1,0 +1,59 @@
+# nestcast: live Mac audio -> Google Cast (Nest Hub) via Cast Streaming.
+# Built inside the Open Screen tree (symlinked as //nestcast).
+
+import("//build_overrides/build.gni")
+import("../gni/openscreen.gni")
+import("../cast/streaming/external_libraries.gni")
+
+# Distribution builds (have_ffmpeg=false) don't get the encoders from
+# cast_sender_core, so nestcast compiles them itself and links libopus and
+# libvpx statically, giving a self-contained binary with no Homebrew deps.
+declare_args() {
+  # Full paths of static libraries for distribution builds, e.g.
+  # [ "/opt/homebrew/lib/libopus.a", "/opt/homebrew/lib/libvpx.a" ].
+  nestcast_static_libs = []
+}
+_dist_build = !(have_ffmpeg && have_libopus && have_libvpx)
+
+openscreen_executable("nestcast") {
+  testonly = true
+  sources = [
+    "discovery.cc",
+    "discovery.h",
+    "live_sender.cc",
+    "live_sender.h",
+    "mac_volume.h",
+    "mac_volume.mm",
+    "main.cc",
+    "system_events.h",
+    "status_screen.h",
+    "status_screen.mm",
+    "system_events.mm",
+    "tap_capture.h",
+    "tap_capture.mm",
+  ]
+  deps = [ "//cast/standalone_sender:cast_sender_core" ]
+  if (_dist_build) {
+    sources += [
+      "//cast/standalone_sender/streaming_encoder_util.cc",
+      "//cast/standalone_sender/streaming_encoder_util.h",
+      "//cast/standalone_sender/streaming_opus_encoder.cc",
+      "//cast/standalone_sender/streaming_opus_encoder.h",
+      "//cast/standalone_sender/streaming_video_encoder.cc",
+      "//cast/standalone_sender/streaming_video_encoder.h",
+      "//cast/standalone_sender/streaming_vpx_encoder.cc",
+      "//cast/standalone_sender/streaming_vpx_encoder.h",
+    ]
+    include_dirs = libopus_include_dirs + libvpx_include_dirs
+    libs = nestcast_static_libs
+  }
+
+  frameworks = [
+    "AudioToolbox.framework",
+    "CoreAudio.framework",
+    "CoreGraphics.framework",
+    "CoreText.framework",
+    "Foundation.framework",
+    "IOKit.framework",
+  ]
+}
