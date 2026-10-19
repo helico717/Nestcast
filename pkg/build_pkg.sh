@@ -36,7 +36,7 @@ xattr -cr $ROOT 2>/dev/null || true  # (com.apple.provenance stays; Installer fo
 COPYFILE_DISABLE=1 pkgbuild --root $ROOT --scripts $REPO/pkg/scripts --identifier local.nestcast.pkg \
   --version $VERSION --install-location / --ownership recommended \
   $OUT/Nestcast-$VERSION.pkg
-cp $REPO/pkg/resources/uninstall.command "$OUT/Nestcast 제거.command"
-chmod +x "$OUT/Nestcast 제거.command"
+cp $REPO/pkg/resources/uninstall.command "$OUT/Nestcast-Uninstall.command"
+chmod +x "$OUT/Nestcast-Uninstall.command"
 rm -rf $WORK
 ls -la $OUT

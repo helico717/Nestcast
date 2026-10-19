@@ -97,7 +97,7 @@ Bluetooth처럼 끊기지 않고, AirCast·Music Assistant보다 훨씬 짧은 *
 
 ## 제거
 
-`Nestcast 제거.command` (Release에 포함, 설치 후에는 `/Applications/Nestcast.app/Contents/Resources/uninstall.command`) 를 **더블클릭**하고 Mac 암호를 입력합니다.
+`Nestcast-Uninstall.command` (Release의 "Nestcast 제거", 설치 후에는 `/Applications/Nestcast.app/Contents/Resources/uninstall.command`) 를 **더블클릭**하고 Mac 암호를 입력합니다.
 Nestcast 앱, 자동 시작 항목, "Nest Hub (Cast)" 장치, 설정이 모두 지워지고 소리는 Mac 스피커로 돌아갑니다.
 
 ## 소스에서 빌드하기
