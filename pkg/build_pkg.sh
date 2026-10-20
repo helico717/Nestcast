@@ -11,27 +11,29 @@ CORE=${CORE:-$OPENSCREEN/out/Dist/nestcast}
 WORK=$REPO/dist/work; ROOT=$WORK/root; OUT=$REPO/dist
 rm -rf $WORK && mkdir -p $ROOT/Applications $ROOT/Library/Audio/Plug-Ins/HAL $OUT
 
-# Nestcast.app: stable launcher (owns the privacy permissions) + engine.
+# Nestcast.app: the app the user opens (settings window, optional menu bar
+# icon). The streaming engine lives inside it as a helper app, started by
+# launchd; closing or quitting the app does not stop it.
 APP=$ROOT/Applications/Nestcast.app
-mkdir -p $APP/Contents/MacOS $APP/Contents/Resources
+mkdir -p $APP/Contents/MacOS $APP/Contents/Resources $APP/Contents/Helpers
+sed "s|<string>0.1</string>|<string>$VERSION</string>|" $REPO/ui/Info.plist > $APP/Contents/Info.plist
+swiftc -O -target arm64-apple-macos26.0 $REPO/ui/Nestcast.swift -o $APP/Contents/MacOS/Nestcast
+
+# Engine helper: stable launcher (owns the privacy permissions) + engine.
+ENGINE="$APP/Contents/Helpers/Nestcast Engine.app"
+mkdir -p "$ENGINE/Contents/MacOS"
 sed -e 's|<string>nestcast</string>|<string>Nestcast</string>|' \
     -e "s|<string>0.1</string>|<string>$VERSION</string>|" \
-    $REPO/app/Info.plist > $APP/Contents/Info.plist
-clang -O2 -arch arm64 -mmacosx-version-min=26.0 -o $APP/Contents/MacOS/Nestcast $REPO/app/launcher.c
-cp $CORE $APP/Contents/MacOS/nestcast-core
+    $REPO/app/Info.plist > "$ENGINE/Contents/Info.plist"
+clang -O2 -arch arm64 -mmacosx-version-min=26.0 -o "$ENGINE/Contents/MacOS/Nestcast" $REPO/app/launcher.c
+cp $CORE "$ENGINE/Contents/MacOS/nestcast-core"
 cp $REPO/pkg/resources/uninstall.command $APP/Contents/Resources/
 chmod +x $APP/Contents/Resources/uninstall.command
-codesign --force --sign - --options runtime --entitlements $REPO/app/entitlements.plist --identifier local.nestcast.core $APP/Contents/MacOS/nestcast-core
-codesign --force --sign - --options runtime --entitlements $REPO/app/entitlements.plist --identifier local.nestcast $APP
-
-# Menu bar app (remote control; quitting it does not stop the engine).
-MENU="$ROOT/Applications/Nestcast Menu.app"
-mkdir -p "$MENU/Contents/MacOS"
-sed "s|<string>0.1</string>|<string>$VERSION</string>|" $REPO/menu/Info.plist \
-  > "$MENU/Contents/Info.plist"
-swiftc -O -target arm64-apple-macos26.0 $REPO/menu/NestcastMenu.swift \
-  -o "$MENU/Contents/MacOS/NestcastMenu"
-codesign --force --sign - --options runtime --identifier local.nestcast.menu "$MENU"
+codesign --force --sign - --options runtime --entitlements $REPO/app/entitlements.plist \
+  --identifier local.nestcast.core "$ENGINE/Contents/MacOS/nestcast-core"
+codesign --force --sign - --options runtime --entitlements $REPO/app/entitlements.plist \
+  --identifier local.nestcast "$ENGINE"
+codesign --force --sign - --options runtime --identifier local.nestcast.app $APP
 
 # Audio driver.
 $REPO/driver/build_driver.sh $ROOT/Library/Audio/Plug-Ins/HAL/NestHubCast.driver >/dev/null

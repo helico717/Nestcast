@@ -7,5 +7,14 @@ USER_NAME=$(stat -f %Su /dev/console)
 if [[ -n "$USER_NAME" && "$USER_NAME" != "root" ]]; then
   launchctl bootout "gui/$(id -u "$USER_NAME")/local.nestcast" 2>/dev/null || true
   launchctl bootout "gui/$(id -u "$USER_NAME")/local.nestcast.menu" 2>/dev/null || true
+  launchctl bootout "gui/$(id -u "$USER_NAME")/local.nestcast.ui" 2>/dev/null || true
+fi
+# Up to 0.1.2, /Applications/Nestcast.app was the engine itself (bundle id
+# local.nestcast). From 0.1.2 it is the app with the engine inside, so remove
+# the old bundle rather than letting Installer merge the two.
+OLD=/Applications/Nestcast.app
+if [[ -d "$OLD" ]] && [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$OLD/Contents/Info.plist" 2>/dev/null)" == "local.nestcast" ]]; then
+  rm -rf "$OLD"
+  echo "removed old engine-only bundle"
 fi
 exit 0

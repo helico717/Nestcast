@@ -10,13 +10,13 @@
     <key>BundleIsVersionChecked</key><false/>
     <key>BundleHasStrictIdentifier</key><true/>
     <key>BundleOverwriteAction</key><string>upgrade</string>
-  </dict>
-  <dict>
-    <key>RootRelativeBundlePath</key><string>Applications/Nestcast Menu.app</string>
-    <key>BundleIsRelocatable</key><false/>
-    <key>BundleIsVersionChecked</key><false/>
-    <key>BundleHasStrictIdentifier</key><true/>
-    <key>BundleOverwriteAction</key><string>upgrade</string>
+    <key>ChildBundles</key>
+    <array>
+      <dict>
+        <key>RootRelativeBundlePath</key><string>Applications/Nestcast.app/Contents/Helpers/Nestcast Engine.app</string>
+        <key>BundleOverwriteAction</key><string>upgrade</string>
+      </dict>
+    </array>
   </dict>
   <dict>
     <key>RootRelativeBundlePath</key><string>Library/Audio/Plug-Ins/HAL/NestHubCast.driver</string>
