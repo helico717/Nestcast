@@ -91,7 +91,7 @@ index 7ec294cb..624948b0 100644
  
    virtual void SetPlaybackRate(double rate) = 0;
 diff --git a/cast/standalone_sender/looping_file_cast_agent.cc b/cast/standalone_sender/looping_file_cast_agent.cc
-index 25704634..94d069d5 100644
+index 25704634..097629a1 100644
 --- a/cast/standalone_sender/looping_file_cast_agent.cc
 +++ b/cast/standalone_sender/looping_file_cast_agent.cc
 @@ -2,6 +2,7 @@
@@ -102,7 +102,20 @@ index 25704634..94d069d5 100644
  #include "cast/standalone_sender/looping_file_cast_agent.h"
  
  #include <algorithm>
-@@ -199,12 +200,59 @@ void LoopingFileCastAgent::OnMessage(VirtualConnectionRouter* router,
+@@ -66,7 +67,11 @@ void LoopingFileCastAgent::Connect(ConnectionSettings settings) {
+ 
+   task_runner_.PostTask([this, policy] {
+ #if BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX)
+-    wake_lock_ = ScopedWakeLock::Create(task_runner_);
++    // nestcast (yield_to_other_apps) handles sleep itself and must not keep
++    // the display awake for as long as audio is being cast.
++    if (!connection_settings_->yield_to_other_apps) {
++      wake_lock_ = ScopedWakeLock::Create(task_runner_);
++    }
+ #endif  // BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX)
+     socket_factory_.Connect(connection_settings_->receiver_endpoint, policy,
+                             &router_);
+@@ -199,12 +204,59 @@ void LoopingFileCastAgent::OnMessage(VirtualConnectionRouter* router,
  }
  
  const char* LoopingFileCastAgent::GetStreamingAppId() const {
@@ -163,7 +176,7 @@ index 25704634..94d069d5 100644
    const Json::Value& details =
        (status[kMessageKeyStatus].isObject() &&
         status[kMessageKeyStatus][kMessageKeyApplications].isArray())
-@@ -214,6 +262,20 @@ void LoopingFileCastAgent::HandleReceiverStatus(const Json::Value& status) {
+@@ -214,6 +266,20 @@ void LoopingFileCastAgent::HandleReceiverStatus(const Json::Value& status) {
    std::string running_app_id;
    if (!json::TryParseString(details[kMessageKeyAppId], &running_app_id) ||
        running_app_id != GetStreamingAppId()) {
@@ -184,7 +197,7 @@ index 25704634..94d069d5 100644
      if (has_launched_) {
        // The mirroring app is not running and should have already been launched.
        // The receiver has already told us it's gone (whether because we asked it
-@@ -298,14 +360,34 @@ void LoopingFileCastAgent::OnRemoteMessagingOpened(bool success) {
+@@ -298,14 +364,34 @@ void LoopingFileCastAgent::OnRemoteMessagingOpened(bool success) {
  
  void LoopingFileCastAgent::OnReceiverMessagingOpened(bool success) {
    // We established a platform connection and now need to launch.
@@ -221,7 +234,7 @@ index 25704634..94d069d5 100644
    static constexpr char kLaunchMessageTemplate[] =
        R"({{"type":"LAUNCH", "requestId":{}, "appId":"{}", "language": "en-US",
         "supportedAppTypes":["WEB"]}})";
-@@ -316,6 +398,30 @@ void LoopingFileCastAgent::OnReceiverMessagingOpened(bool success) {
+@@ -316,6 +402,30 @@ void LoopingFileCastAgent::OnReceiverMessagingOpened(bool success) {
                                 GetStreamingAppId())));
  }
  
@@ -252,7 +265,7 @@ index 25704634..94d069d5 100644
  void LoopingFileCastAgent::CreateAndStartSession() {
    TRACE_DEFAULT_SCOPED(TraceCategory::kStandaloneSender);
  
-@@ -343,6 +449,10 @@ void LoopingFileCastAgent::CreateAndStartSession() {
+@@ -343,6 +453,10 @@ void LoopingFileCastAgent::CreateAndStartSession() {
    AudioCaptureConfig audio_config;
    // Opus does best at 192kbps, so we cap that here.
    audio_config.bit_rate = 192 * 1000;
@@ -263,7 +276,7 @@ index 25704634..94d069d5 100644
    VideoCaptureConfig video_config = {
        .codec = connection_settings_->codec,
        // The video config is allowed to use whatever is left over after audio.
-@@ -352,6 +462,9 @@ void LoopingFileCastAgent::CreateAndStartSession() {
+@@ -352,6 +466,9 @@ void LoopingFileCastAgent::CreateAndStartSession() {
                                                        : 0)};
    // Use default display resolution of 1080P.
    video_config.resolutions.emplace_back(Resolution{1920, 1080});
@@ -273,7 +286,7 @@ index 25704634..94d069d5 100644
  
    OSP_VLOG << "Starting session negotiation.";
    Error negotiation_error;
-@@ -366,8 +479,12 @@ void LoopingFileCastAgent::CreateAndStartSession() {
+@@ -366,8 +483,12 @@ void LoopingFileCastAgent::CreateAndStartSession() {
    } else {
      cast_mode_ = CastMode::kMirroring;
      if (connection_settings_->should_include_audio) {
@@ -491,3 +504,33 @@ index 349afdc7..9f2a1a43 100644
    OSP_DCHECK(config.IsValid());
    return std::make_unique<SenderImpl>(*config_.environment, packet_router_,
                                        std::move(config), type);
+diff --git a/util/scoped_wake_lock_mac.cc b/util/scoped_wake_lock_mac.cc
+index 1d58e994..9e07cdef 100644
+--- a/util/scoped_wake_lock_mac.cc
++++ b/util/scoped_wake_lock_mac.cc
+@@ -67,13 +67,22 @@ void ScopedWakeLockMac::AcquireWakeLock() {
+ 
+   const IOReturn result = IOPMAssertionCreateWithProperties(
+       assertion_properties, &lock_state_.assertion_id);
+-  OSP_CHECK_EQ(result, kIOReturnSuccess);
++  CFRelease(assertion_properties);
++  // nestcast: a refused power assertion is not worth crashing over.
++  OSP_LOG_IF(WARN, result != kIOReturnSuccess)
++      << "IOPMAssertionCreateWithProperties failed: " << result;
++  if (result != kIOReturnSuccess) {
++    lock_state_.assertion_id = kIOPMNullAssertionID;
++  }
+ }
+ 
+ // static
+ void ScopedWakeLockMac::ReleaseWakeLock() {
+-  const IOReturn result = IOPMAssertionRelease(lock_state_.assertion_id);
+-  OSP_CHECK_EQ(result, kIOReturnSuccess);
++  if (lock_state_.assertion_id == kIOPMNullAssertionID) {
++    return;
++  }
++  IOPMAssertionRelease(lock_state_.assertion_id);
++  lock_state_.assertion_id = kIOPMNullAssertionID;
+ }
+ 
+ ScopedWakeLockMac::LockState ScopedWakeLockMac::lock_state_;
