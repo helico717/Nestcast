@@ -12,7 +12,7 @@
     <key>BundleOverwriteAction</key><string>upgrade</string>
   </dict>
   <dict>
-    <key>RootRelativeBundlePath</key><string>Applications/Nestcast 스피커 선택.app</string>
+    <key>RootRelativeBundlePath</key><string>Applications/Nestcast Menu.app</string>
     <key>BundleIsRelocatable</key><false/>
     <key>BundleIsVersionChecked</key><false/>
     <key>BundleHasStrictIdentifier</key><true/>

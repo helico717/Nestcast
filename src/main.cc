@@ -104,6 +104,36 @@ void SaveHub(const std::string& id, const std::string& name) {
   std::ofstream(path) << id << "\n" << name << "\n";
 }
 
+std::string ConfigDir() {
+  const std::string p = HubConfigPath();
+  return p.substr(0, p.rfind('/'));
+}
+
+// "Mac 오디오 전송" switch, written by the menu bar app: file `enabled`
+// containing 0 or 1 (missing = on).
+bool LoadEnabled() {
+  std::ifstream in(ConfigDir() + "/enabled");
+  std::string v;
+  return !(std::getline(in, v) && Trim(v) == "0");
+}
+
+std::string JsonEscape(const std::string& v) {
+  std::string out;
+  for (char c : v) {
+    if (c == '"' || c == '\\') {
+      out += '\\';
+      out += c;
+    } else if (static_cast<unsigned char>(c) < 0x20) {
+      char buf[8];
+      snprintf(buf, sizeof(buf), "\\u%04x", c);
+      out += buf;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
 bool IsNestHub(const CastDevice& d) {
   return d.model.find("Nest Hub") != std::string::npos;
 }
@@ -218,7 +248,10 @@ class Supervisor {
   //          (e.g. the Mac speakers): hand the Hub back and wait.
   enum class Mode { kTap, kDevice, kPaused };
 
-  static Mode DesiredMode() {
+  Mode DesiredMode() const {
+    if (!enabled_) {
+      return Mode::kPaused;  // Switched off in the menu bar app.
+    }
     if (!TapCapture::FindDevice(kVirtualDeviceUID)) {
       return Mode::kTap;
     }
@@ -238,6 +271,7 @@ class Supervisor {
     OSP_LOG_INFO << "nestcast: mode "
                  << (mode_ == Mode::kTap      ? "tap (system audio)"
                      : mode_ == Mode::kDevice ? "device (Nest Hub (Cast) output)"
+                     : !enabled_              ? "off (switched off in the menu)"
                                               : "paused (Mac output is not Nest Hub (Cast))");
   }
 
@@ -255,7 +289,8 @@ class Supervisor {
     capture_.Stop();
     if (want == Mode::kPaused) {
       paused_ = true;
-      RestoreHubVolume("Mac output switched away from Nest Hub (Cast)");
+      RestoreHubVolume(enabled_ ? "Mac output switched away from Nest Hub (Cast)"
+                                : "switched off in the menu");
       ++generation_;
       streaming_ = false;
       connecting_ = false;
@@ -387,6 +422,108 @@ class Supervisor {
     PersistSavedHubVolume();
   }
 
+  // --- Menu bar app interface (files in ~/Library/Application Support/
+  // nestcast): it writes `enabled` and `hub`; we write `status.json`. ---
+
+  void WatchConfig() {
+    enabled_ = LoadEnabled();
+    const std::string hub = LoadHubIdOrName();
+    if (!hub.empty() && hub != target_) {
+      OSP_LOG_INFO << "nestcast: speaker changed in settings; switching";
+      RestoreHubVolume("switching to another speaker");
+      target_ = hub;
+      ++generation_;
+      streaming_ = false;
+      connecting_ = false;
+      busy_app_.clear();
+      RetireAgent();
+      if (!paused_ && !sleeping_ && !stopping_) {
+        backoff_ = kMinBackoff;
+        Connect(generation_);
+      }
+    }
+  }
+
+  bool RefreshRequested() {
+    const std::string path = ConfigDir() + "/refresh";
+    if (access(path.c_str(), F_OK) != 0) {
+      return false;
+    }
+    std::remove(path.c_str());
+    return true;
+  }
+
+  void RefreshDeviceList() {
+    if (listing_) {
+      return;
+    }
+    listing_ = true;
+    std::thread([this] {
+      std::vector<CastDevice> list = ListCastDevices(milliseconds(4000));
+      runner_.PostTask([this, list] {
+        listing_ = false;
+        devices_ = list;
+        last_status_.clear();  // Force a status write.
+        WriteStatus();
+      });
+    }).detach();
+  }
+
+  void WriteStatus() {
+    std::string state;
+    if (!enabled_) {
+      state = "off";
+    } else if (mode_ == Mode::kPaused) {
+      state = "output_not_cast";
+    } else if (sleeping_) {
+      state = "sleeping";
+    } else if (!busy_app_.empty()) {
+      state = "yielded";
+    } else if (streaming_) {
+      state = "streaming";
+    } else {
+      state = "connecting";
+    }
+    std::string hub_name;
+    for (const CastDevice& d : devices_) {
+      if (d.id == target_) {
+        hub_name = d.friendly_name;
+      }
+    }
+    if (hub_name.empty()) {
+      std::ifstream in(HubConfigPath());
+      std::string line;
+      std::getline(in, line);
+      std::getline(in, line);
+      hub_name = Trim(line);
+    }
+    std::string json = "{\"state\":\"" + state + "\",\"hub_id\":\"" +
+                       JsonEscape(target_) + "\",\"hub_name\":\"" +
+                       JsonEscape(hub_name) + "\",\"busy_app\":\"" +
+                       JsonEscape(busy_app_) + "\",\"problem\":\"" +
+                       JsonEscape(last_problem_) + "\",\"devices\":[";
+    for (size_t i = 0; i < devices_.size(); ++i) {
+      json += std::string(i ? "," : "") + "{\"name\":\"" +
+              JsonEscape(devices_[i].friendly_name) + "\",\"model\":\"" +
+              JsonEscape(devices_[i].model) + "\",\"id\":\"" +
+              JsonEscape(devices_[i].id) + "\"}";
+    }
+    json += "]}";
+    // Rewrite on change, and every ~10 s as a heartbeat (the menu shows the
+    // engine as not running if the file goes stale).
+    if (json == last_status_ && ticks_ % 500 != 0) {
+      return;
+    }
+    last_status_ = json;
+    const std::string path = ConfigDir() + "/status.json";
+    system(("mkdir -p \"" + ConfigDir() + "\"").c_str());
+    {
+      std::ofstream out(path + ".tmp");
+      out << json << "\n";
+    }
+    std::rename((path + ".tmp").c_str(), path.c_str());
+  }
+
   void LogCaptureStarted() {
     OSP_LOG_INFO << "nestcast: capturing "
                  << (capture_options_.include_pids.empty()
@@ -405,8 +542,13 @@ class Supervisor {
         capture_.Release();
       }
     }
-    if (++ticks_ % 50 == 0) {
-      CheckMode();  // ~1 s: also notices the driver being (un)installed.
+    if (++ticks_ % 50 == 0) {  // ~1 s
+      WatchConfig();
+      CheckMode();  // Also notices the driver being (un)installed.
+      WriteStatus();
+    }
+    if (ticks_ % 1500 == 1 || RefreshRequested()) {  // ~30 s, or on request
+      RefreshDeviceList();
     }
     if (!sleeping_ && !stopping_ && !paused_) {
       // Measured on the IO thread's own clock, so a busy task runner can't
@@ -501,10 +643,14 @@ class Supervisor {
           return;
         }
         if (!dev) {
-          OSP_LOG_WARN << "nestcast: " << problem;
+          if (problem != last_problem_) {
+            OSP_LOG_WARN << "nestcast: " << problem;
+          }
+          last_problem_ = problem;
           OnAgentDown(gen);
           return;
         }
+        last_problem_.clear();
         openscreen::ErrorOr<IPEndpoint> found = IPEndpoint::Parse(
             dev->address + ":" + std::to_string(dev->port));
         if (!found || dev->id.empty()) {
@@ -643,6 +789,11 @@ class Supervisor {
   std::vector<std::unique_ptr<LoopingFileCastAgent>> retiring_;
 
   std::string busy_app_;  // Non-empty while yielding to another app.
+  bool enabled_ = LoadEnabled();
+  std::string last_problem_;
+  std::vector<CastDevice> devices_;
+  bool listing_ = false;
+  std::string last_status_;
   std::unique_ptr<MacVolume> mac_volume_;
   std::optional<std::pair<double, bool>> saved_hub_volume_;  // To restore.
   std::optional<std::pair<double, bool>> hub_volume_;        // Last reported.

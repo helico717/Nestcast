@@ -4,7 +4,7 @@
 # Prerequisite: the self-contained binary from scripts/build.sh
 # (<openscreen>/out/Dist/nestcast).
 set -euo pipefail
-VERSION=${VERSION:-0.1.1}
+VERSION=${VERSION:-0.1.2}
 REPO=${0:A:h:h}
 OPENSCREEN=${OPENSCREEN:-$REPO/../openscreen/openscreen}
 CORE=${CORE:-$OPENSCREEN/out/Dist/nestcast}
@@ -24,13 +24,14 @@ chmod +x $APP/Contents/Resources/uninstall.command
 codesign --force --sign - --options runtime --entitlements $REPO/app/entitlements.plist --identifier local.nestcast.core $APP/Contents/MacOS/nestcast-core
 codesign --force --sign - --options runtime --entitlements $REPO/app/entitlements.plist --identifier local.nestcast $APP
 
-# Speaker chooser.
-osacompile -o "$ROOT/Applications/Nestcast 스피커 선택.app" $REPO/pkg/resources/choose_hub.applescript
-/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string local.nestcast.chooser" \
-  "$ROOT/Applications/Nestcast 스피커 선택.app/Contents/Info.plist" 2>/dev/null ||
-  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier local.nestcast.chooser" \
-  "$ROOT/Applications/Nestcast 스피커 선택.app/Contents/Info.plist"
-codesign --force --sign - "$ROOT/Applications/Nestcast 스피커 선택.app"
+# Menu bar app (remote control; quitting it does not stop the engine).
+MENU="$ROOT/Applications/Nestcast Menu.app"
+mkdir -p "$MENU/Contents/MacOS"
+sed "s|<string>0.1</string>|<string>$VERSION</string>|" $REPO/menu/Info.plist \
+  > "$MENU/Contents/Info.plist"
+swiftc -O -target arm64-apple-macos26.0 $REPO/menu/NestcastMenu.swift \
+  -o "$MENU/Contents/MacOS/NestcastMenu"
+codesign --force --sign - --options runtime --identifier local.nestcast.menu "$MENU"
 
 # Audio driver.
 $REPO/driver/build_driver.sh $ROOT/Library/Audio/Plug-Ins/HAL/NestHubCast.driver >/dev/null

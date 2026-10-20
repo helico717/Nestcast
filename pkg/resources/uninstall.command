@@ -3,9 +3,11 @@
 # Removes Nestcast, its LaunchAgent, the "Nest Hub (Cast)" audio device and its
 # settings, and restores the Mac's built-in speakers.
 echo "Nestcast를 제거합니다. 관리자 암호를 입력해 주세요."
+launchctl bootout "gui/$(id -u)/local.nestcast.menu" 2>/dev/null
 launchctl bootout "gui/$(id -u)/local.nestcast" 2>/dev/null
-rm -f "$HOME/Library/LaunchAgents/local.nestcast.plist"
-sudo rm -rf "/Applications/Nestcast.app" "/Applications/Nestcast 스피커 선택.app" \
+rm -f "$HOME/Library/LaunchAgents/local.nestcast.plist" "$HOME/Library/LaunchAgents/local.nestcast.menu.plist"
+sudo rm -rf "/Applications/Nestcast.app" "/Applications/Nestcast Menu.app" \
+  "/Applications/Nestcast 스피커 선택.app" \
   "/Library/Audio/Plug-Ins/HAL/NestHubCast.driver"
 sudo pkgutil --forget local.nestcast.pkg >/dev/null 2>&1
 sudo killall -9 coreaudiod 2>/dev/null

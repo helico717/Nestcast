@@ -45,7 +45,29 @@ EOF
 chown "$USER_NAME":staff "$AGENT"
 chmod 644 "$AGENT"
 
+# Menu bar app: starts at login; quitting it only hides the menu.
+MENU_AGENT="$AGENT_DIR/local.nestcast.menu.plist"
+cat > "$MENU_AGENT" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.nestcast.menu</string>
+  <key>ProgramArguments</key>
+  <array><string>/Applications/Nestcast Menu.app/Contents/MacOS/NestcastMenu</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+</dict>
+</plist>
+PLIST
+chown "$USER_NAME":staff "$MENU_AGENT"
+chmod 644 "$MENU_AGENT"
+# Replaced by the menu bar app.
+rm -rf "/Applications/Nestcast 스피커 선택.app"
+
 sleep 3   # Let coreaudiod come back with the new device.
+launchctl bootout "gui/$USER_ID/local.nestcast.menu" 2>/dev/null || true
+launchctl bootstrap "gui/$USER_ID" "$MENU_AGENT" || true
 launchctl bootout "gui/$USER_ID/local.nestcast" 2>/dev/null || true
 for attempt in 1 2 3 4 5; do
   if launchctl bootstrap "gui/$USER_ID" "$AGENT"; then
