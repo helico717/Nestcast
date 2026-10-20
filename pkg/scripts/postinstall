@@ -7,7 +7,24 @@ exec >>$LOG 2>&1
 echo "== postinstall $(date)"
 
 chown -R root:wheel "/Library/Audio/Plug-Ins/HAL/NestHubCast.driver"
-killall -9 coreaudiod 2>/dev/null || true   # Restarts automatically.
+# Restart Core Audio (to load the driver) only when the driver changed, and
+# via launchd rather than killing it; then wait until it answers again.
+DRV=/Library/Audio/Plug-Ins/HAL/NestHubCast.driver/Contents/MacOS/NestHubCast
+NEW_SHA=$(shasum -a 256 "$DRV" | cut -d' ' -f1)
+if [[ "$NEW_SHA" != "$(cat /tmp/nestcast-driver.sha 2>/dev/null)" ]]; then
+  echo "driver changed; restarting Core Audio"
+  launchctl kickstart -k system/com.apple.audio.coreaudiod 2>/dev/null || killall coreaudiod 2>/dev/null || true
+  for i in {1..30}; do
+    sleep 1
+    if /usr/bin/perl -e "alarm 4; exec @ARGV" /usr/sbin/system_profiler SPAudioDataType >/dev/null 2>&1; then
+      echo "Core Audio is back after ${i}s"
+      break
+    fi
+  done
+else
+  echo "driver unchanged; Core Audio not restarted"
+fi
+rm -f /tmp/nestcast-driver.sha
 
 USER_NAME=$(stat -f %Su /dev/console)
 if [[ -z "$USER_NAME" || "$USER_NAME" == "root" || "$USER_NAME" == "loginwindow" ]]; then
@@ -71,7 +88,6 @@ launchctl bootout "gui/$USER_ID/local.nestcast.menu" 2>/dev/null || true
 rm -f "$AGENT_DIR/local.nestcast.menu.plist"
 rm -rf "/Applications/Nestcast 스피커 선택.app" "/Applications/Nestcast Menu.app"
 
-sleep 3   # Let coreaudiod come back with the new device.
 launchctl bootout "gui/$USER_ID/local.nestcast.ui" 2>/dev/null || true
 launchctl bootstrap "gui/$USER_ID" "$UI_AGENT" || true
 launchctl bootout "gui/$USER_ID/local.nestcast" 2>/dev/null || true

@@ -146,7 +146,13 @@ func switchOutputAwayFromCast() {
 final class Model: ObservableObject {
   @Published var status: EngineStatus? = readStatus()
   @Published var enabled = readEnabled()
-  @Published var castOutput = outputIsCast()
+  // Core Audio is only touched off the main thread: if the audio service
+  // (coreaudiod) is busy or hung, the window must still open and respond.
+  @Published var castOutput = false
+  @Published var audioSystemResponding = true
+  private let audioQueue = DispatchQueue(label: "nestcast.coreaudio")
+  private var audioQueryInFlight = false
+  private var audioQueryStarted = Date()
   @Published var showInMenuBar = UserDefaults.standard.bool(forKey: kShowInMenuBarKey) {
     didSet {
       UserDefaults.standard.set(showInMenuBar, forKey: kShowInMenuBarKey)
@@ -166,16 +172,34 @@ final class Model: ObservableObject {
     if s != status { status = s }
     let e = readEnabled()
     if e != enabled { enabled = e }
-    let c = outputIsCast()
-    if c != castOutput { castOutput = c }
+    if audioQueryInFlight {
+      // A query that takes this long means the audio service is hung.
+      let hung = Date().timeIntervalSince(audioQueryStarted) > 3
+      if hung == audioSystemResponding { audioSystemResponding = !hung }
+      return
+    }
+    audioQueryInFlight = true
+    audioQueryStarted = Date()
+    audioQueue.async { [weak self] in
+      let c = outputIsCast()
+      DispatchQueue.main.async {
+        guard let self = self else { return }
+        self.audioQueryInFlight = false
+        if !self.audioSystemResponding { self.audioSystemResponding = true }
+        if c != self.castOutput { self.castOutput = c }
+      }
+    }
   }
 
-  var sending: Bool { enabled && castOutput }
+  var sending: Bool { enabled && (castOutput || !audioSystemResponding) }
 
   func setSending(_ on: Bool) {
     writeConfig("enabled", on ? "1\n" : "0\n")
-    if on { switchOutputToCast() } else { switchOutputAwayFromCast() }
-    poll()
+    enabled = on
+    audioQueue.async { [weak self] in
+      if on { switchOutputToCast() } else { switchOutputAwayFromCast() }
+      DispatchQueue.main.async { self?.poll() }
+    }
   }
 
   func choose(_ s: Speaker) {
@@ -185,6 +209,7 @@ final class Model: ObservableObject {
   func refreshSpeakers() { writeConfig("refresh", "1\n") }
 
   var statusText: String {
+    if !audioSystemResponding { return "Mac 오디오 시스템이 응답하지 않습니다" }
     guard let s = status else { return "Nestcast 엔진이 실행 중이 아닙니다" }
     let hub = s.hub_name.isEmpty ? "스피커" : "‘\(s.hub_name)’"
     switch s.state {
@@ -244,6 +269,20 @@ struct SettingsView: View {
             Text(model.statusText).font(.callout).foregroundStyle(.secondary)
           }
         }
+      }
+
+      if !model.audioSystemResponding {
+        HStack(alignment: .top, spacing: 10) {
+          Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Mac 오디오 시스템이 응답하지 않습니다").font(.headline)
+            Text("macOS의 오디오 서비스(coreaudiod)가 멈춘 상태입니다. Mac을 재시동하거나 터미널에서 `sudo killall coreaudiod` 를 실행하면 복구됩니다.")
+              .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.12)))
       }
 
       if model.sending && model.status?.permission == "missing" {
