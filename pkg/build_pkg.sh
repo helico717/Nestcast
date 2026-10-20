@@ -18,10 +18,15 @@ APP=$ROOT/Applications/Nestcast.app
 mkdir -p $APP/Contents/MacOS $APP/Contents/Resources $APP/Contents/Helpers
 sed "s|<string>0.1</string>|<string>$VERSION</string>|" $REPO/ui/Info.plist > $APP/Contents/Info.plist
 swiftc -O -target arm64-apple-macos26.0 $REPO/ui/Nestcast.swift -o $APP/Contents/MacOS/Nestcast
+# App icon (rendered from code: ui/make_icon.swift).
+swiftc -O $REPO/ui/make_icon.swift -o $WORK/make_icon
+$WORK/make_icon $WORK/Nestcast.iconset
+iconutil -c icns $WORK/Nestcast.iconset -o $APP/Contents/Resources/Nestcast.icns
 
 # Engine helper: stable launcher (owns the privacy permissions) + engine.
 ENGINE="$APP/Contents/Helpers/Nestcast Engine.app"
-mkdir -p "$ENGINE/Contents/MacOS"
+mkdir -p "$ENGINE/Contents/MacOS" "$ENGINE/Contents/Resources"
+cp $APP/Contents/Resources/Nestcast.icns "$ENGINE/Contents/Resources/"
 sed -e 's|<string>nestcast</string>|<string>Nestcast</string>|' \
     -e "s|<string>0.1</string>|<string>$VERSION</string>|" \
     $REPO/app/Info.plist > "$ENGINE/Contents/Info.plist"

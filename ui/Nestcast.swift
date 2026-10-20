@@ -17,6 +17,7 @@ import SwiftUI
 let kVirtualDeviceUID = "Nest Hub (Cast)_UID"
 let kShowInMenuBarKey = "showInMenuBar"
 let kPreviousOutputKey = "previousOutputUID"
+let kShowWindowNotification = Notification.Name("local.nestcast.showWindow")
 
 // MARK: - Files shared with the engine
 
@@ -397,6 +398,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
   lazy var menuBar = MenuBarController(model: model) { [weak self] in self?.showWindow() }
 
   func applicationDidFinishLaunching(_ n: Notification) {
+    // Single instance: if Nestcast is already running (e.g. started at login
+    // for the menu bar icon), ask it to show its window and exit.
+    let me = ProcessInfo.processInfo.processIdentifier
+    if NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+      .contains(where: { $0.processIdentifier != me }) {
+      if !CommandLine.arguments.contains("--background") {
+        DistributedNotificationCenter.default().postNotificationName(
+          kShowWindowNotification, object: nil, userInfo: nil, deliverImmediately: true)
+      }
+      NSApp.terminate(nil)
+      return
+    }
+    DistributedNotificationCenter.default().addObserver(
+      forName: kShowWindowNotification, object: nil, queue: .main) { [weak self] _ in self?.showWindow() }
     model.onMenuBarChange = { [weak self] on in
       self?.menuBar.setVisible(on)
     }
