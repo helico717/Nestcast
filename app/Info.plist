@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleIdentifier</key><string>local.nestcast</string>
+  <key>CFBundleIdentifier</key><string>local.nestcast.engine</string>
   <key>CFBundleName</key><string>Nestcast</string>
   <key>CFBundleExecutable</key><string>nestcast</string>
   <key>CFBundlePackageType</key><string>APPL</string>

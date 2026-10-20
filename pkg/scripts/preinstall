@@ -9,12 +9,16 @@ if [[ -n "$USER_NAME" && "$USER_NAME" != "root" ]]; then
   launchctl bootout "gui/$(id -u "$USER_NAME")/local.nestcast.menu" 2>/dev/null || true
   launchctl bootout "gui/$(id -u "$USER_NAME")/local.nestcast.ui" 2>/dev/null || true
 fi
-# Up to 0.1.2, /Applications/Nestcast.app was the engine itself (bundle id
-# local.nestcast). From 0.1.2 it is the app with the engine inside, so remove
-# the old bundle rather than letting Installer merge the two.
+# Older layouts: up to 0.1.1, /Applications/Nestcast.app was the engine
+# itself (Contents/MacOS/nestcast-core); an early 0.1.2 build could end up in
+# /Applications/Nestcast.localized. Remove both so this install is clean.
 OLD=/Applications/Nestcast.app
-if [[ -d "$OLD" ]] && [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$OLD/Contents/Info.plist" 2>/dev/null)" == "local.nestcast" ]]; then
+if [[ -x "$OLD/Contents/MacOS/nestcast-core" ]]; then
   rm -rf "$OLD"
   echo "removed old engine-only bundle"
+fi
+if [[ -d /Applications/Nestcast.localized/Nestcast.app ]]; then
+  rm -rf /Applications/Nestcast.localized
+  echo "removed /Applications/Nestcast.localized"
 fi
 exit 0

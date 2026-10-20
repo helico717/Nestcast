@@ -30,10 +30,10 @@ cp $CORE "$ENGINE/Contents/MacOS/nestcast-core"
 cp $REPO/pkg/resources/uninstall.command $APP/Contents/Resources/
 chmod +x $APP/Contents/Resources/uninstall.command
 codesign --force --sign - --options runtime --entitlements $REPO/app/entitlements.plist \
-  --identifier local.nestcast.core "$ENGINE/Contents/MacOS/nestcast-core"
+  --identifier local.nestcast.engine.core "$ENGINE/Contents/MacOS/nestcast-core"
 codesign --force --sign - --options runtime --entitlements $REPO/app/entitlements.plist \
-  --identifier local.nestcast "$ENGINE"
-codesign --force --sign - --options runtime --identifier local.nestcast.app $APP
+  --identifier local.nestcast.engine "$ENGINE"
+codesign --force --sign - --options runtime --identifier local.nestcast $APP
 
 # Audio driver.
 $REPO/driver/build_driver.sh $ROOT/Library/Audio/Plug-Ins/HAL/NestHubCast.driver >/dev/null
