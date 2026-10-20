@@ -12,5 +12,11 @@
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <key>NSHumanReadableCopyright</key><string>GPL-3.0</string>
+  <!-- macOS attributes the engine helper's privacy access to this app, so the
+       usage descriptions must be here too (without them access is silently
+       denied: the audio tap delivers only silence). -->
+  <key>NSAudioCaptureUsageDescription</key><string>Nestcast captures the Mac's audio to play it on your Google Cast speaker.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Nestcast streams audio to Google Cast speakers on your local network.</string>
+  <key>NSBonjourServices</key><array><string>_googlecast._tcp</string></array>
 </dict>
 </plist>

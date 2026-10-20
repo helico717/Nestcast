@@ -553,9 +553,11 @@ class Supervisor {
     if (!sleeping_ && !stopping_ && !paused_) {
       // Measured on the IO thread's own clock, so a busy task runner can't
       // fake a stall.
+      // Signed: the IO thread may store a timestamp newer than `now`.
+      const uint64_t last_io = capture_.last_io_host_time();
+      const uint64_t now_host = mach_absolute_time();
       const double idle_s =
-          (mach_absolute_time() - capture_.last_io_host_time()) * ns_per_tick_ /
-          1e9;
+          now_host > last_io ? (now_host - last_io) * ns_per_tick_ / 1e9 : 0.0;
       // A fresh tap may take a while to deliver its first buffer (e.g. while
       // macOS shows the audio-recording permission prompt), so only a tap
       // that has run and then stopped is rebuilt quickly.
