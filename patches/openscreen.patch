@@ -91,7 +91,7 @@ index 7ec294cb..624948b0 100644
  
    virtual void SetPlaybackRate(double rate) = 0;
 diff --git a/cast/standalone_sender/looping_file_cast_agent.cc b/cast/standalone_sender/looping_file_cast_agent.cc
-index 25704634..8e33eb5b 100644
+index 25704634..94d069d5 100644
 --- a/cast/standalone_sender/looping_file_cast_agent.cc
 +++ b/cast/standalone_sender/looping_file_cast_agent.cc
 @@ -2,6 +2,7 @@
@@ -102,7 +102,7 @@ index 25704634..8e33eb5b 100644
  #include "cast/standalone_sender/looping_file_cast_agent.h"
  
  #include <algorithm>
-@@ -199,12 +200,56 @@ void LoopingFileCastAgent::OnMessage(VirtualConnectionRouter* router,
+@@ -199,12 +200,59 @@ void LoopingFileCastAgent::OnMessage(VirtualConnectionRouter* router,
  }
  
  const char* LoopingFileCastAgent::GetStreamingAppId() const {
@@ -146,6 +146,9 @@ index 25704634..8e33eb5b 100644
 +      connection_settings_ && connection_settings_->yield_to_other_apps;
 +  if (awaiting_idle_check_) {
 +    awaiting_idle_check_ = false;
++    if (stop_requested_) {
++      return;
++    }
 +    const std::string other = FindOtherActiveApp(status);
 +    if (!other.empty()) {
 +      busy_app_ = other;
@@ -160,7 +163,7 @@ index 25704634..8e33eb5b 100644
    const Json::Value& details =
        (status[kMessageKeyStatus].isObject() &&
         status[kMessageKeyStatus][kMessageKeyApplications].isArray())
-@@ -214,6 +259,20 @@ void LoopingFileCastAgent::HandleReceiverStatus(const Json::Value& status) {
+@@ -214,6 +262,20 @@ void LoopingFileCastAgent::HandleReceiverStatus(const Json::Value& status) {
    std::string running_app_id;
    if (!json::TryParseString(details[kMessageKeyAppId], &running_app_id) ||
        running_app_id != GetStreamingAppId()) {
@@ -181,7 +184,20 @@ index 25704634..8e33eb5b 100644
      if (has_launched_) {
        // The mirroring app is not running and should have already been launched.
        // The receiver has already told us it's gone (whether because we asked it
-@@ -306,6 +365,20 @@ void LoopingFileCastAgent::OnReceiverMessagingOpened(bool success) {
+@@ -298,14 +360,34 @@ void LoopingFileCastAgent::OnRemoteMessagingOpened(bool success) {
+ 
+ void LoopingFileCastAgent::OnReceiverMessagingOpened(bool success) {
+   // We established a platform connection and now need to launch.
+-  OSP_CHECK(platform_remote_connection_);
+-  OSP_CHECK(!remote_connection_);
++  // nestcast: the agent may have been asked to stop (e.g. the user picked
++  // another speaker) while the connection was being opened.
++  if (!platform_remote_connection_ || remote_connection_ || stop_requested_) {
++    return;
++  }
+   if (!success) {
+     OSP_LOG_INFO << "Failed to establish messaging to the Cast Receiver.";
+     Shutdown();  // Never launched; nothing to notify.
      return;
    }
  
@@ -199,10 +215,13 @@ index 25704634..8e33eb5b 100644
 +}
 +
 +void LoopingFileCastAgent::SendLaunch() {
++  if (!platform_remote_connection_ || stop_requested_) {
++    return;
++  }
    static constexpr char kLaunchMessageTemplate[] =
        R"({{"type":"LAUNCH", "requestId":{}, "appId":"{}", "language": "en-US",
         "supportedAppTypes":["WEB"]}})";
-@@ -316,6 +389,30 @@ void LoopingFileCastAgent::OnReceiverMessagingOpened(bool success) {
+@@ -316,6 +398,30 @@ void LoopingFileCastAgent::OnReceiverMessagingOpened(bool success) {
                                 GetStreamingAppId())));
  }
  
@@ -233,7 +252,7 @@ index 25704634..8e33eb5b 100644
  void LoopingFileCastAgent::CreateAndStartSession() {
    TRACE_DEFAULT_SCOPED(TraceCategory::kStandaloneSender);
  
-@@ -343,6 +440,10 @@ void LoopingFileCastAgent::CreateAndStartSession() {
+@@ -343,6 +449,10 @@ void LoopingFileCastAgent::CreateAndStartSession() {
    AudioCaptureConfig audio_config;
    // Opus does best at 192kbps, so we cap that here.
    audio_config.bit_rate = 192 * 1000;
@@ -244,7 +263,7 @@ index 25704634..8e33eb5b 100644
    VideoCaptureConfig video_config = {
        .codec = connection_settings_->codec,
        // The video config is allowed to use whatever is left over after audio.
-@@ -352,6 +453,9 @@ void LoopingFileCastAgent::CreateAndStartSession() {
+@@ -352,6 +462,9 @@ void LoopingFileCastAgent::CreateAndStartSession() {
                                                        : 0)};
    // Use default display resolution of 1080P.
    video_config.resolutions.emplace_back(Resolution{1920, 1080});
@@ -254,7 +273,7 @@ index 25704634..8e33eb5b 100644
  
    OSP_VLOG << "Starting session negotiation.";
    Error negotiation_error;
-@@ -366,8 +470,12 @@ void LoopingFileCastAgent::CreateAndStartSession() {
+@@ -366,8 +479,12 @@ void LoopingFileCastAgent::CreateAndStartSession() {
    } else {
      cast_mode_ = CastMode::kMirroring;
      if (connection_settings_->should_include_audio) {
