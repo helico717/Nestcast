@@ -401,7 +401,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
       self?.menuBar.setVisible(on)
     }
     menuBar.setVisible(model.showInMenuBar)
-    let background = CommandLine.arguments.contains("--background")
+    // Right after installation the installer leaves `show_window`, so the
+    // first (background) launch opens the window once.
+    let showOnce = configDir.appendingPathComponent("show_window")
+    let firstRun = FileManager.default.fileExists(atPath: showOnce.path)
+    if firstRun { try? FileManager.default.removeItem(at: showOnce) }
+    let background = CommandLine.arguments.contains("--background") && !firstRun
     if background {
       // Login launch: only the menu bar icon, if it's enabled.
       if !model.showInMenuBar {

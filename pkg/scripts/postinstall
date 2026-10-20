@@ -63,6 +63,9 @@ cat > "$UI_AGENT" <<PLIST
 PLIST
 chown "$USER_NAME":staff "$UI_AGENT"
 chmod 644 "$UI_AGENT"
+# The app's first launch (by the agent below) opens its window once.
+CONF="$USER_HOME/Library/Application Support/nestcast"
+mkdir -p "$CONF" && touch "$CONF/show_window" && chown -R "$USER_NAME":staff "$CONF"
 # Remove pieces of older versions (0.1.0 chooser, 0.1.2 menu bar app).
 launchctl bootout "gui/$USER_ID/local.nestcast.menu" 2>/dev/null || true
 rm -f "$AGENT_DIR/local.nestcast.menu.plist"
@@ -75,8 +78,6 @@ launchctl bootout "gui/$USER_ID/local.nestcast" 2>/dev/null || true
 for attempt in 1 2 3 4 5; do
   if launchctl bootstrap "gui/$USER_ID" "$AGENT"; then
     echo "LaunchAgent started for $USER_NAME"
-    # Show the Nestcast window once, so the user sees where the settings are.
-    launchctl asuser "$USER_ID" sudo -u "$USER_NAME" open -a /Applications/Nestcast.app || true
     exit 0
   fi
   sleep 2
