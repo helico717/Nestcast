@@ -4,7 +4,7 @@
 # Prerequisite: the self-contained binary from scripts/build.sh
 # (<openscreen>/out/Dist/nestcast).
 set -euo pipefail
-VERSION=${VERSION:-0.1.0}
+VERSION=${VERSION:-0.1.1}
 REPO=${0:A:h:h}
 OPENSCREEN=${OPENSCREEN:-$REPO/../openscreen/openscreen}
 CORE=${CORE:-$OPENSCREEN/out/Dist/nestcast}
@@ -21,8 +21,8 @@ clang -O2 -arch arm64 -mmacosx-version-min=26.0 -o $APP/Contents/MacOS/Nestcast 
 cp $CORE $APP/Contents/MacOS/nestcast-core
 cp $REPO/pkg/resources/uninstall.command $APP/Contents/Resources/
 chmod +x $APP/Contents/Resources/uninstall.command
-codesign --force --sign - --identifier local.nestcast.core $APP/Contents/MacOS/nestcast-core
-codesign --force --sign - --identifier local.nestcast $APP
+codesign --force --sign - --options runtime --entitlements $REPO/app/entitlements.plist --identifier local.nestcast.core $APP/Contents/MacOS/nestcast-core
+codesign --force --sign - --options runtime --entitlements $REPO/app/entitlements.plist --identifier local.nestcast $APP
 
 # Speaker chooser.
 osacompile -o "$ROOT/Applications/Nestcast 스피커 선택.app" $REPO/pkg/resources/choose_hub.applescript

@@ -4,10 +4,10 @@
 // coreaudiod restarts, and rebuilds the audio tap if it stalls.
 //
 // usage: nestcast [options] [cast_name | ip[:port]]
-//   With no receiver given, the name saved in
-//   ~/Library/Application Support/nestcast/hub is used; if there is none, the
-//   first "Nest Hub" found is used and saved.
-//   --list         print the Cast devices on the network and exit
+//   With no receiver given, the speaker saved in
+//   ~/Library/Application Support/nestcast/hub (Cast device ID) is used; if
+//   none is saved, a Nest Hub is used only if it is the only one around.
+//   --list         print the Cast devices (name, model, ID) and exit
 //   --playout MS   target playout delay (default 300)
 //   --pid PID      capture only this process (repeatable); default: all audio
 //   --mute         mute captured audio on the Mac's own output
@@ -81,21 +81,31 @@ std::string HubConfigPath() {
          "/Library/Application Support/nestcast/hub";
 }
 
-std::string LoadHubName() {
-  std::ifstream in(HubConfigPath());
-  std::string name;
-  std::getline(in, name);
-  while (!name.empty() && (name.back() == '\n' || name.back() == '\r' ||
-                           name.back() == ' ')) {
-    name.pop_back();
+// The config file holds the chosen speaker's unique Cast ID on line 1 and its
+// friendly name (for display only) on line 2. A file with just a name on
+// line 1 (older versions) is upgraded to an ID on first successful connect.
+std::string Trim(std::string v) {
+  while (!v.empty() && (v.back() == '\n' || v.back() == '\r' || v.back() == ' ')) {
+    v.pop_back();
   }
-  return name;
+  return v;
 }
 
-void SaveHubName(const std::string& name) {
+std::string LoadHubIdOrName() {
+  std::ifstream in(HubConfigPath());
+  std::string line;
+  std::getline(in, line);
+  return Trim(line);
+}
+
+void SaveHub(const std::string& id, const std::string& name) {
   const std::string path = HubConfigPath();
   system(("mkdir -p \"" + path.substr(0, path.rfind('/')) + "\"").c_str());
-  std::ofstream(path) << name << "\n";
+  std::ofstream(path) << id << "\n" << name << "\n";
+}
+
+bool IsNestHub(const CastDevice& d) {
+  return d.model.find("Nest Hub") != std::string::npos;
 }
 
 void Usage(const char* argv0) {
@@ -216,20 +226,12 @@ class Supervisor {
                                                                : Mode::kPaused;
   }
 
-  TapCapture::Options OptionsFor(Mode mode) const {
+  TapCapture::Options OptionsFor(Mode) const {
     // Even in device mode, audio is captured with the system-audio tap: a
-    // process tap sees apps' output whichever device it goes to, and it uses
-    // the already-granted "System Audio Recording" permission. (Reading the
-    // device's loopback input would need Microphone permission; without it
-    // macOS silently delivers zeros.) The virtual device's job is to be the
-    // silent, latency-reporting output that keeps video lip-synced.
-    // NESTCAST_DEVICE_LOOPBACK=1 forces loopback capture (needs Microphone).
-    TapCapture::Options o = capture_options_;
-    if (mode == Mode::kDevice && getenv("NESTCAST_DEVICE_LOOPBACK")) {
-      o = TapCapture::Options{};
-      o.device_uid = kVirtualDeviceUID;
-    }
-    return o;
+    // process tap sees apps' output whichever device it goes to. The virtual
+    // device's job is to be the silent, latency-reporting output that keeps
+    // video lip-synced (it has no input side to read).
+    return capture_options_;
   }
 
   void LogMode() {
@@ -386,11 +388,6 @@ class Supervisor {
   }
 
   void LogCaptureStarted() {
-    if (mode_ == Mode::kDevice && getenv("NESTCAST_DEVICE_LOOPBACK")) {
-      OSP_LOG_INFO << "nestcast: capturing Nest Hub (Cast) loopback at "
-                   << capture_.sample_rate() << " Hz";
-      return;
-    }
     OSP_LOG_INFO << "nestcast: capturing "
                  << (capture_options_.include_pids.empty()
                          ? std::string("all system audio")
@@ -470,33 +467,60 @@ class Supervisor {
       StartAgent(gen, ep.value());
       return;
     }
-    // A Cast friendly name: resolve it fresh via mDNS, off the task runner.
-    const std::string name = target_;
-    std::thread([this, gen, name] {
-      std::optional<CastDevice> dev = FindCastDevice(name, kDiscoveryTimeout);
-      runner_.PostTask([this, gen, dev] {
+    // A Cast device ID or name: resolve it fresh via mDNS, off the runner.
+    // With nothing configured, use a Nest Hub only if it is the ONLY one on
+    // the network: on a shared network (office, dorm, rental) the first Hub
+    // found could be a stranger's, which would then play this Mac's audio.
+    const std::string wanted = target_;
+    std::thread([this, gen, wanted] {
+      std::optional<CastDevice> dev;
+      std::string problem;
+      if (wanted.empty()) {
+        std::vector<CastDevice> hubs;
+        for (const CastDevice& d : ListCastDevices(kDiscoveryTimeout)) {
+          if (IsNestHub(d)) {
+            hubs.push_back(d);
+          }
+        }
+        if (hubs.size() == 1) {
+          dev = hubs[0];
+        } else if (hubs.empty()) {
+          problem = "no Nest Hub found on the network";
+        } else {
+          problem = std::to_string(hubs.size()) +
+                    " Nest Hubs found; choose one with \"Nestcast 스피커 선택\"";
+        }
+      } else {
+        dev = FindCastDevice(wanted, kDiscoveryTimeout);
+        if (!dev) {
+          problem = "the chosen speaker was not found on the network";
+        }
+      }
+      runner_.PostTask([this, gen, dev, problem] {
         if (gen != generation_) {
           return;
         }
         if (!dev) {
-          OSP_LOG_WARN << "nestcast: Cast device \"" << target_
-                       << "\" not found on the network";
+          OSP_LOG_WARN << "nestcast: " << problem;
           OnAgentDown(gen);
           return;
         }
         openscreen::ErrorOr<IPEndpoint> found = IPEndpoint::Parse(
             dev->address + ":" + std::to_string(dev->port));
-        if (!found) {
+        if (!found || dev->id.empty()) {
           OnAgentDown(gen);
           return;
         }
         OSP_LOG_INFO << "nestcast: found \"" << dev->friendly_name << "\" ("
                      << dev->model << ") at " << found.value();
-        if (target_.empty()) {
-          target_ = dev->friendly_name;
-          SaveHubName(target_);
-          OSP_LOG_INFO << "nestcast: no Hub configured; using \"" << target_
-                       << "\" (saved to " << HubConfigPath() << ")";
+        if (target_ != dev->id) {
+          // First use, or upgrading a name-only config: remember the ID.
+          if (target_.empty()) {
+            OSP_LOG_INFO << "nestcast: the only Nest Hub on the network is \""
+                         << dev->friendly_name << "\"; using it";
+          }
+          target_ = dev->id;
+          SaveHub(dev->id, dev->friendly_name);
         }
         StartAgent(gen, found.value());
       });
@@ -607,7 +631,8 @@ class Supervisor {
   }
 
   TaskRunnerImpl& runner_;
-  std::string target_;  // Empty: auto-pick the first Nest Hub, then save it.
+  // Cast device ID (or legacy name / IP). Empty: use the only Nest Hub.
+  std::string target_;
   const int playout_ms_;
   const TapCapture::Options capture_options_;
   const bool show_clock_;
@@ -660,7 +685,7 @@ int Main(int argc, char* argv[]) {
       show_clock = std::string(argv[++i]) != "black";
     } else if (a == "--list") {
       for (const CastDevice& d : ListCastDevices(milliseconds(4000))) {
-        std::cout << d.friendly_name << "\t" << d.model << "\t" << d.address
+        std::cout << d.friendly_name << "\t" << d.model << "\t" << d.id
                   << "\n";
       }
       return 0;
@@ -674,7 +699,7 @@ int Main(int argc, char* argv[]) {
     }
   }
   if (target.empty()) {
-    target = LoadHubName();  // May stay empty: auto-pick.
+    target = LoadHubIdOrName();  // May stay empty: see Connect().
   }
   if (playout_ms < 50 || playout_ms > 5000) {
     Usage(argv[0]);

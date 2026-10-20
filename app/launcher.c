@@ -1,10 +1,16 @@
-// Nestcast.app launcher: a stable, signed-once executable that owns the
-// macOS privacy permissions (System Audio Recording, Local Network) and runs
-// the frequently-rebuilt nestcast binary as a child, which inherits them.
+// Nestcast.app launcher: a stable executable that owns the macOS privacy
+// permissions (System Audio Recording, Local Network) and runs the bundled
+// nestcast-core as a child, which inherits them.
+//
+// Because the child inherits those permissions, the launcher only runs its
+// own sibling binary, only if root owns it and nobody else can modify it
+// (as installed by the .pkg into /Applications), and with DYLD_* variables
+// removed. Both binaries are signed with the hardened runtime.
 #include <signal.h>
 #include <spawn.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <mach-o/dyld.h>
@@ -18,25 +24,44 @@ static void forward(int sig) {
 }
 
 int main(int argc, char* argv[]) {
-  // Run the bundled nestcast-core next to this launcher (NESTCAST_BIN, if
-  // set, overrides it for development).
   char path[1024];
   char self[1024];
   uint32_t self_size = sizeof(self);
-  path[0] = 0;
-  if (_NSGetExecutablePath(self, &self_size) == 0) {
-    char* slash = strrchr(self, '/');
-    if (slash) {
-      *slash = 0;
-      snprintf(path, sizeof(path), "%s/nestcast-core", self);
-      if (access(path, X_OK) != 0) path[0] = 0;
-    }
-  }
-  const char* override_path = getenv("NESTCAST_BIN");
-  if (override_path) snprintf(path, sizeof(path), "%s", override_path);
-  if (!path[0]) {
-    fprintf(stderr, "Nestcast launcher: nestcast-core not found\n");
+  if (_NSGetExecutablePath(self, &self_size) != 0) {
     return 127;
+  }
+  char* slash = strrchr(self, '/');
+  if (!slash) {
+    return 127;
+  }
+  *slash = 0;
+  snprintf(path, sizeof(path), "%s/nestcast-core", self);
+  // The binary and its directory must be root-owned and not writable by
+  // group/others, so no unprivileged process can swap in its own code.
+  struct stat st_file, st_dir;
+  if (stat(path, &st_file) != 0 || stat(self, &st_dir) != 0 ||
+      st_file.st_uid != 0 || st_dir.st_uid != 0 ||
+      (st_file.st_mode & (S_IWGRP | S_IWOTH)) ||
+      (st_dir.st_mode & (S_IWGRP | S_IWOTH))) {
+    fprintf(stderr,
+            "Nestcast launcher: refusing to run %s (must be root-owned and "
+            "not writable by others; reinstall Nestcast)\n",
+            path);
+    return 126;
+  }
+  // No library injection into the process that holds the permissions.
+  for (char** e = environ; *e;) {
+    if (strncmp(*e, "DYLD_", 5) == 0) {
+      char name[256];
+      const char* eq = strchr(*e, '=');
+      size_t n = eq ? (size_t)(eq - *e) : strlen(*e);
+      if (n >= sizeof(name)) n = sizeof(name) - 1;
+      memcpy(name, *e, n);
+      name[n] = 0;
+      unsetenv(name);  // Shifts the array; re-check the same slot.
+    } else {
+      ++e;
+    }
   }
   argv[0] = path;
   signal(SIGINT, forward);

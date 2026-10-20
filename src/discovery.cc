@@ -5,6 +5,7 @@
 #include <netinet/in.h>
 #include <sys/select.h>
 
+#include <cctype>
 #include <vector>
 
 namespace nestcast {
@@ -22,7 +23,7 @@ struct State {
   std::vector<Pending> found;
   // Resolve result for the current candidate.
   bool resolved = false;
-  std::string fn, md, host;
+  std::string fn, md, host, id;
   int port = 0;
   // Address result.
   bool have_addr = false;
@@ -57,6 +58,7 @@ void ResolveCallback(DNSServiceRef, DNSServiceFlags, uint32_t,
   s->port = ntohs(port_be);
   s->fn = TxtValue(txt, txt_len, "fn");
   s->md = TxtValue(txt, txt_len, "md");
+  s->id = TxtValue(txt, txt_len, "id");
 }
 
 // Only private/link-local IPv4 is a plausible LAN Cast device. (Some ISP
@@ -85,6 +87,18 @@ void AddrCallback(DNSServiceRef, DNSServiceFlags, uint32_t interface_index,
     s->addr = buf;
     s->have_addr = true;
   }
+}
+
+bool IsCastId(const std::string& v) {
+  if (v.size() != 32) {
+    return false;
+  }
+  for (char c : v) {
+    if (!isxdigit(static_cast<unsigned char>(c))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // Processes events on `ref` until `done()` or `deadline`.
@@ -146,9 +160,10 @@ std::optional<CastDevice> Browse(const std::string& name,
       Pump(resolve, std::min(deadline, Clock::now() + std::chrono::seconds(2)),
            [&] { return s.resolved; });
       DNSServiceRefDeallocate(resolve);
-      const bool match = name.empty()
-                             ? s.md.find("Nest Hub") != std::string::npos
-                             : s.fn == name;
+      // A stored ID matches only the ID (never a device merely *named* like
+      // it); anything else is treated as a friendly name.
+      const bool match =
+          !name.empty() && (IsCastId(name) ? s.id == name : s.fn == name);
       if (!s.resolved || (!list_all && !match)) {
         continue;
       }
@@ -167,13 +182,13 @@ std::optional<CastDevice> Browse(const std::string& name,
         if (list_all) {
           bool seen = false;
           for (const CastDevice& d : *all) {
-            seen = seen || d.friendly_name == s.fn;
+            seen = seen || d.id == s.id;
           }
           if (!seen) {  // Seen once per network interface.
-            all->push_back(CastDevice{s.fn, s.md, s.host, s.addr, s.port});
+            all->push_back(CastDevice{s.fn, s.md, s.host, s.addr, s.port, s.id});
           }
         } else {
-          result = CastDevice{s.fn, s.md, s.host, s.addr, s.port};
+          result = CastDevice{s.fn, s.md, s.host, s.addr, s.port, s.id};
         }
       }
     }
@@ -183,9 +198,9 @@ std::optional<CastDevice> Browse(const std::string& name,
 }
 }  // namespace
 
-std::optional<CastDevice> FindCastDevice(const std::string& name,
+std::optional<CastDevice> FindCastDevice(const std::string& id_or_name,
                                          std::chrono::milliseconds timeout) {
-  return Browse(name, timeout, false, nullptr);
+  return Browse(id_or_name, timeout, false, nullptr);
 }
 
 std::vector<CastDevice> ListCastDevices(std::chrono::milliseconds timeout) {

@@ -18,12 +18,14 @@ struct CastDevice {
   std::string host;     // e.g. fuchsia-xxxx.local.
   std::string address;  // IPv4 dotted quad.
   int port = 0;
+  std::string id;  // Unique Cast device ID (the "id" TXT field, 32 hex chars).
 };
 
-// Blocks for up to `timeout`. Returns the first device whose friendly name
-// equals `name`.
-// An empty `name` matches the first device whose model contains "Nest Hub".
-std::optional<CastDevice> FindCastDevice(const std::string& name,
+// Blocks for up to `timeout`. Returns the device whose unique Cast ID equals
+// `id_or_name`, or else whose friendly name does. Friendly names are not
+// unique (anyone on the network can name a device the same), so callers
+// should store and look up the ID.
+std::optional<CastDevice> FindCastDevice(const std::string& id_or_name,
                                          std::chrono::milliseconds timeout);
 
 // Lists all Cast devices found within `timeout`.

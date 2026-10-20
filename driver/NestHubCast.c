@@ -11,6 +11,12 @@
 #define kDevice2_Name                    "Nest Hub (Cast) Mirror"
 #define kManufacturer_Name               "nestcast (local)"
 #define kNumber_Of_Channels              2
+// Output only: nestcast captures with a process tap, so the device needs no
+// loopback input. Without an input side, no app (even one with Microphone
+// permission) can read the audio routed to it, and it can never become the
+// default input.
+#define kDevice_HasInput                 false
+#define kDevice2_HasInput                false
 #define kSampleRates                     48000
 #define kLatency_Frame_Size              0
 #ifndef kReported_Output_Latency_Frames
