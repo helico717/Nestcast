@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Installer must put each bundle exactly here, never "relocate" it to an
+     existing copy with the same bundle identifier elsewhere on the disk. -->
+<plist version="1.0">
+<array>
+  <dict>
+    <key>RootRelativeBundlePath</key><string>Applications/Nestcast.app</string>
+    <key>BundleIsRelocatable</key><false/>
+    <key>BundleIsVersionChecked</key><false/>
+    <key>BundleHasStrictIdentifier</key><true/>
+    <key>BundleOverwriteAction</key><string>upgrade</string>
+  </dict>
+  <dict>
+    <key>RootRelativeBundlePath</key><string>Applications/Nestcast 스피커 선택.app</string>
+    <key>BundleIsRelocatable</key><false/>
+    <key>BundleIsVersionChecked</key><false/>
+    <key>BundleHasStrictIdentifier</key><true/>
+    <key>BundleOverwriteAction</key><string>upgrade</string>
+  </dict>
+  <dict>
+    <key>RootRelativeBundlePath</key><string>Library/Audio/Plug-Ins/HAL/NestHubCast.driver</string>
+    <key>BundleIsRelocatable</key><false/>
+    <key>BundleIsVersionChecked</key><false/>
+    <key>BundleHasStrictIdentifier</key><true/>
+    <key>BundleOverwriteAction</key><string>upgrade</string>
+  </dict>
+</array>
+</plist>

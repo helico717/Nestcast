@@ -26,6 +26,10 @@ codesign --force --sign - --options runtime --entitlements $REPO/app/entitlement
 
 # Speaker chooser.
 osacompile -o "$ROOT/Applications/Nestcast 스피커 선택.app" $REPO/pkg/resources/choose_hub.applescript
+/usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string local.nestcast.chooser" \
+  "$ROOT/Applications/Nestcast 스피커 선택.app/Contents/Info.plist" 2>/dev/null ||
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier local.nestcast.chooser" \
+  "$ROOT/Applications/Nestcast 스피커 선택.app/Contents/Info.plist"
 codesign --force --sign - "$ROOT/Applications/Nestcast 스피커 선택.app"
 
 # Audio driver.
@@ -33,7 +37,11 @@ $REPO/driver/build_driver.sh $ROOT/Library/Audio/Plug-Ins/HAL/NestHubCast.driver
 
 chmod +x $REPO/pkg/scripts/*
 xattr -cr $ROOT 2>/dev/null || true  # (com.apple.provenance stays; Installer folds ._* back into xattrs)
-COPYFILE_DISABLE=1 pkgbuild --root $ROOT --scripts $REPO/pkg/scripts --identifier local.nestcast.pkg \
+# Never "relocate" the apps: by default Installer updates an existing bundle
+# with the same identifier wherever it lives (e.g. a development copy) instead
+# of installing into /Applications.
+COPYFILE_DISABLE=1 pkgbuild --root $ROOT --component-plist $REPO/pkg/components.plist \
+  --scripts $REPO/pkg/scripts --identifier local.nestcast.pkg \
   --version $VERSION --install-location / --ownership recommended \
   $OUT/Nestcast-$VERSION.pkg
 cp $REPO/pkg/resources/uninstall.command "$OUT/Nestcast-Uninstall.command"

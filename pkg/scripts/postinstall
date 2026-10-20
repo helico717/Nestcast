@@ -47,6 +47,13 @@ chmod 644 "$AGENT"
 
 sleep 3   # Let coreaudiod come back with the new device.
 launchctl bootout "gui/$USER_ID/local.nestcast" 2>/dev/null || true
-launchctl bootstrap "gui/$USER_ID" "$AGENT"
-echo "LaunchAgent started for $USER_NAME"
+for attempt in 1 2 3 4 5; do
+  if launchctl bootstrap "gui/$USER_ID" "$AGENT"; then
+    echo "LaunchAgent started for $USER_NAME"
+    exit 0
+  fi
+  sleep 2
+done
+echo "WARNING: could not start the LaunchAgent; it will start at next login"
+exit 0
 exit 0
