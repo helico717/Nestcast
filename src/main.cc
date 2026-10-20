@@ -17,6 +17,7 @@
 #include <mach/mach_time.h>
 #include <unistd.h>
 
+#include <cmath>
 #include <csignal>
 #include <fstream>
 #include <cstdlib>
@@ -347,6 +348,7 @@ class Supervisor {
   // we LAUNCH (reply to GET_STATUS), i.e. it is the Hub's own volume.
   void OnHubVolume(double level, bool muted) {
     hub_volume_ = std::make_pair(level, muted);
+    FollowHubVolume(level);
     if (!saved_hub_volume_ && !streaming_) {
       saved_hub_volume_ = hub_volume_;
       PersistSavedHubVolume();
@@ -373,11 +375,33 @@ class Supervisor {
   // Relative control: the Hub keeps its own level when a session starts
   // (the Mac is often at 100% because its speaker is muted), and each Mac
   // volume-key step moves the Hub by the same amount. Mute is mirrored.
+  // Volume keys → Hub volume.
+  // Device mode (output = "Nest Hub (Cast)"): the Mac volume slider IS the
+  // Hub volume (absolute). The very first time, the slider is set to the
+  // Hub's current level, so nothing jumps; afterwards the Hub follows the
+  // slider, including after reconnects, and changes made on the Hub itself
+  // (buttons, voice) move the slider. Tap mode (no virtual device, slider =
+  // Mac speakers): relative steps, as the Mac is often at 100% there.
+  static std::string VolumeSyncedPath() { return ConfigDir() + "/volume_synced"; }
+
   void BeginVolumeTracking() {
     double level = 0;
     bool muted = false;
     if (!mac_volume_ || !mac_volume_->Read(&level, &muted)) {
       mac_base_.reset();
+      return;
+    }
+    if (mode_ == Mode::kDevice) {
+      if (access(VolumeSyncedPath().c_str(), F_OK) != 0 && hub_volume_) {
+        mac_volume_->Write(hub_volume_->first);
+        std::ofstream(VolumeSyncedPath()) << "1\n";
+        OSP_LOG_INFO << "nestcast: Mac volume set to the Hub's "
+                     << hub_volume_->first << " (first sync)";
+        last_pushed_ = std::make_pair(hub_volume_->first, muted);
+        return;
+      }
+      last_pushed_.reset();
+      PushMacVolume(/*force=*/true);  // Hub := slider.
       return;
     }
     mac_base_ = level;
@@ -388,17 +412,23 @@ class Supervisor {
   void PushMacVolume(bool force) {
     double level = 0;
     bool muted = false;
-    if (!streaming_ || !agent_ || !mac_volume_ || !mac_base_ ||
+    if (!streaming_ || !agent_ || !mac_volume_ ||
         !mac_volume_->Read(&level, &muted)) {
       return;
     }
-    double hub = std::clamp(hub_base_ + (level - *mac_base_), 0.0, 1.0);
-    // Re-anchor at the ends, so after hitting 0 or 1 the next step responds.
-    if (hub == 0.0 || hub == 1.0) {
-      mac_base_ = level;
-      hub_base_ = hub;
+    double hub = level;
+    if (mode_ != Mode::kDevice) {
+      if (!mac_base_) {
+        return;
+      }
+      hub = std::clamp(hub_base_ + (level - *mac_base_), 0.0, 1.0);
+      // Re-anchor at the ends, so after hitting 0 or 1 the next step responds.
+      if (hub == 0.0 || hub == 1.0) {
+        mac_base_ = level;
+        hub_base_ = hub;
+      }
     }
-    if (!force && last_pushed_ && last_pushed_->first == hub &&
+    if (!force && last_pushed_ && std::abs(last_pushed_->first - hub) < 0.005 &&
         last_pushed_->second == muted) {
       return;
     }
@@ -406,6 +436,18 @@ class Supervisor {
     agent_->SetReceiverVolume(hub, muted);
     OSP_LOG_INFO << "nestcast: Hub volume " << hub << (muted ? " (muted)" : "")
                  << " (Mac " << level << ")";
+  }
+
+  // Volume changed on the Hub itself while streaming: move the Mac slider.
+  void FollowHubVolume(double level) {
+    if (mode_ != Mode::kDevice || !streaming_ || !mac_volume_ ||
+        !last_pushed_ || std::abs(last_pushed_->first - level) < 0.02) {
+      return;
+    }
+    last_pushed_ = std::make_pair(level, last_pushed_->second);
+    mac_volume_->Write(level);
+    OSP_LOG_INFO << "nestcast: Hub volume changed on the Hub to " << level
+                 << "; Mac slider follows";
   }
 
   void RestoreHubVolume(const char* why) {
@@ -457,7 +499,7 @@ class Supervisor {
     } else if (peak > 0.0f) {
       silent_while_playing_s_ = 0;
     }
-    const bool suspect = silent_while_playing_s_ >= 8;
+    const bool suspect = silent_while_playing_s_ >= 15;
     if (suspect != permission_suspect_) {
       permission_suspect_ = suspect;
       if (suspect) {

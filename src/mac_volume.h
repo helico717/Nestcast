@@ -19,6 +19,8 @@ class MacVolume {
   bool Start();
   // Current values of the default output device.
   bool Read(double* level, bool* muted) const;
+  // Sets the default output device's volume (what the slider/keys show).
+  bool Write(double level) const;
 
   struct Impl;
 

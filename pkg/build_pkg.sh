@@ -4,7 +4,7 @@
 # Prerequisite: the self-contained binary from scripts/build.sh
 # (<openscreen>/out/Dist/nestcast).
 set -euo pipefail
-VERSION=${VERSION:-0.1.2}
+VERSION=${VERSION:-0.1.3}
 REPO=${0:A:h:h}
 OPENSCREEN=${OPENSCREEN:-$REPO/../openscreen/openscreen}
 CORE=${CORE:-$OPENSCREEN/out/Dist/nestcast}

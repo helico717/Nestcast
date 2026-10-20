@@ -113,6 +113,21 @@ bool MacVolume::Start() {
              impl_->device_listener) == noErr;
 }
 
+bool MacVolume::Write(double level) const {
+  const AudioDeviceID dev = DefaultOutputDevice();
+  if (dev == kAudioObjectUnknown) {
+    return false;
+  }
+  Float32 v = static_cast<Float32>(level < 0 ? 0 : (level > 1 ? 1 : level));
+  // The "virtual main volume" is implemented by AudioToolbox, so it has to
+  // be set through AudioHardwareService rather than AudioObject.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  return AudioHardwareServiceSetPropertyData(dev, &kVolume, 0, nullptr,
+                                             sizeof(v), &v) == noErr;
+#pragma clang diagnostic pop
+}
+
 bool MacVolume::Read(double* level, bool* muted) const {
   return Impl::ReadDevice(DefaultOutputDevice(), level, muted);
 }
