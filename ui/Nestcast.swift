@@ -36,6 +36,7 @@ struct EngineStatus: Decodable, Equatable {
   let hub_name: String
   let busy_app: String
   let problem: String
+  let permission: String?  // "missing" when capture is silent while apps play
   let devices: [Speaker]
 }
 
@@ -211,6 +212,15 @@ final class Model: ObservableObject {
   }
 }
 
+func openAudioRecordingSettings() {
+  // Privacy & Security → Screen & System Audio Recording.
+  for url in ["x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture",
+              "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+              "x-apple.systempreferences:com.apple.preference.security"] {
+    if let u = URL(string: url), NSWorkspace.shared.open(u) { return }
+  }
+}
+
 func openLog() {
   let log = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/nestcast.log")
   NSWorkspace.shared.open([log], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Console.app"),
@@ -234,6 +244,22 @@ struct SettingsView: View {
             Text(model.statusText).font(.callout).foregroundStyle(.secondary)
           }
         }
+      }
+
+      if model.sending && model.status?.permission == "missing" {
+        HStack(alignment: .top, spacing: 10) {
+          Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+          VStack(alignment: .leading, spacing: 6) {
+            Text("오디오 녹음 권한이 필요합니다").font(.headline)
+            Text("Mac에서 소리가 재생되고 있지만 Nestcast가 소리를 받지 못하고 있습니다. 업데이트 후에는 macOS가 권한을 다시 확인할 수 있습니다. **화면 및 시스템 오디오 녹음**에서 Nestcast를 켜 주세요(이미 켜져 있다면 껐다가 다시 켜기).")
+              .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Button("시스템 설정 열기") { openAudioRecordingSettings() }
+          }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.12)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.35)))
       }
 
       GroupBox {

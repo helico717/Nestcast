@@ -12,6 +12,7 @@
 #include <sys/types.h>
 
 #include <atomic>
+#include <cstring>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -61,6 +62,16 @@ class TapCapture {
   const CaptureChunk* Peek();
   void Release();
 
+  // Largest absolute sample since the last call (and resets it).
+  float TakePeak() {
+    const uint32_t bits = peak_bits_.exchange(0);
+    float v;
+    memcpy(&v, &bits, sizeof(v));
+    return v;
+  }
+  // True if any other process is currently sending audio to an output.
+  static bool OtherProcessesPlaying();
+
   uint64_t overruns() const { return overruns_.load(); }
   uint64_t callbacks() const { return callbacks_.load(); }
   // mach_absolute_time of the most recent IO callback (0 = none yet).
@@ -85,6 +96,8 @@ class TapCapture {
   std::atomic<uint64_t> overruns_{0};
   std::atomic<uint64_t> callbacks_{0};
   std::atomic<uint64_t> last_io_host_time_{0};
+  std::atomic<uint32_t> peak_bits_{0};  // float bits; non-negative floats
+                                        // order like their bit patterns.
 
   double sample_rate_ = 0;
   uint32_t tap_id_ = 0;        // AudioObjectID

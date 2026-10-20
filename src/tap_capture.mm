@@ -399,6 +399,52 @@ void TapCapture::OnInput(uint64_t host_time,
     }
   }
   write_index_.store(w + 1, std::memory_order_release);
+
+  float peak = 0;
+  for (int i = 0; i < frames * kChannels; ++i) {
+    const float v = c.data[i] < 0 ? -c.data[i] : c.data[i];
+    if (v > peak) peak = v;
+  }
+  uint32_t bits;
+  memcpy(&bits, &peak, sizeof(bits));
+  uint32_t prev = peak_bits_.load(std::memory_order_relaxed);
+  while (bits > prev &&
+         !peak_bits_.compare_exchange_weak(prev, bits, std::memory_order_relaxed)) {
+  }
+}
+
+// static
+bool TapCapture::OtherProcessesPlaying() {
+  AudioObjectPropertyAddress addr = {kAudioHardwarePropertyProcessObjectList,
+                                     kAudioObjectPropertyScopeGlobal,
+                                     kAudioObjectPropertyElementMain};
+  UInt32 size = 0;
+  if (AudioObjectGetPropertyDataSize(kAudioObjectSystemObject, &addr, 0,
+                                     nullptr, &size) != noErr) {
+    return false;
+  }
+  std::vector<AudioObjectID> procs(size / sizeof(AudioObjectID));
+  AudioObjectGetPropertyData(kAudioObjectSystemObject, &addr, 0, nullptr,
+                             &size, procs.data());
+  const pid_t self = getpid();
+  for (AudioObjectID p : procs) {
+    pid_t pid = 0;
+    UInt32 psize = sizeof(pid);
+    AudioObjectPropertyAddress paddr = {kAudioProcessPropertyPID,
+                                        kAudioObjectPropertyScopeGlobal,
+                                        kAudioObjectPropertyElementMain};
+    AudioObjectGetPropertyData(p, &paddr, 0, nullptr, &psize, &pid);
+    UInt32 running = 0;
+    UInt32 rsize = sizeof(running);
+    AudioObjectPropertyAddress raddr = {kAudioProcessPropertyIsRunningOutput,
+                                        kAudioObjectPropertyScopeGlobal,
+                                        kAudioObjectPropertyElementMain};
+    AudioObjectGetPropertyData(p, &raddr, 0, nullptr, &rsize, &running);
+    if (pid != self && running) {
+      return true;
+    }
+  }
+  return false;
 }
 
 const CaptureChunk* TapCapture::Peek() {

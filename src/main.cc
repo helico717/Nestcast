@@ -444,6 +444,31 @@ class Supervisor {
     }
   }
 
+  // Without the "System Audio Recording" permission (e.g. after an update
+  // re-signed the app) macOS silently feeds the tap pure silence. Flag that
+  // when other apps are playing but nothing at all arrives, so the app can
+  // point the user to System Settings.
+  void CheckPermission() {
+    const float peak = capture_.TakePeak();
+    if (mode_ == Mode::kPaused || capture_.callbacks() == 0) {
+      silent_while_playing_s_ = 0;
+    } else if (peak == 0.0f && TapCapture::OtherProcessesPlaying()) {
+      ++silent_while_playing_s_;
+    } else if (peak > 0.0f) {
+      silent_while_playing_s_ = 0;
+    }
+    const bool suspect = silent_while_playing_s_ >= 8;
+    if (suspect != permission_suspect_) {
+      permission_suspect_ = suspect;
+      if (suspect) {
+        OSP_LOG_WARN << "nestcast: apps are playing but capture is silent; "
+                        "System Audio Recording permission is probably off";
+      } else {
+        OSP_LOG_INFO << "nestcast: audio is being captured again";
+      }
+    }
+  }
+
   bool RefreshRequested() {
     const std::string path = ConfigDir() + "/refresh";
     if (access(path.c_str(), F_OK) != 0) {
@@ -501,7 +526,9 @@ class Supervisor {
                        JsonEscape(target_) + "\",\"hub_name\":\"" +
                        JsonEscape(hub_name) + "\",\"busy_app\":\"" +
                        JsonEscape(busy_app_) + "\",\"problem\":\"" +
-                       JsonEscape(last_problem_) + "\",\"devices\":[";
+                       JsonEscape(last_problem_) + "\",\"permission\":\"" +
+                       (permission_suspect_ ? "missing" : "ok") +
+                       "\",\"devices\":[";
     for (size_t i = 0; i < devices_.size(); ++i) {
       json += std::string(i ? "," : "") + "{\"name\":\"" +
               JsonEscape(devices_[i].friendly_name) + "\",\"model\":\"" +
@@ -543,6 +570,7 @@ class Supervisor {
       }
     }
     if (++ticks_ % 50 == 0) {  // ~1 s
+      CheckPermission();
       WatchConfig();
       CheckMode();  // Also notices the driver being (un)installed.
       WriteStatus();
@@ -796,6 +824,8 @@ class Supervisor {
   std::vector<CastDevice> devices_;
   bool listing_ = false;
   std::string last_status_;
+  int silent_while_playing_s_ = 0;
+  bool permission_suspect_ = false;
   std::unique_ptr<MacVolume> mac_volume_;
   std::optional<std::pair<double, bool>> saved_hub_volume_;  // To restore.
   std::optional<std::pair<double, bool>> hub_volume_;        // Last reported.
